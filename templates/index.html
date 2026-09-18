@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Helixa Space — Meet. Teach. Collaborate. Anywhere.</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <div class="brand">
+      <span class="brand-mark">H</span>
+      Helixa Space
+    </div>
+    <div class="nav-actions">
+      <button class="theme-toggle" id="themeToggle" title="Toggle theme" aria-label="Toggle theme"></button>
+      <a href="{{ url_for('join') }}" class="btn btn-ghost btn-sm">Join Space</a>
+    </div>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-grid">
+    <div>
+      <div class="eyebrow-tag">
+        <span class="eyebrow-dot"></span>
+        Built by Helixa Technologies
+      </div>
+      <h1>Meet. Teach. Collaborate.<br>
+        <span id="typedWord">Anywhere</span><span class="type-cursor"></span>.
+      </h1>
+      <p class="hero-tagline">
+        Helixa Space is a video meeting and e-classroom platform that works
+        online, or entirely offline over a local network — no internet required.
+      </p>
+      <div class="hero-actions">
+        <a href="{{ url_for('create') }}" class="btn btn-primary">Create Space</a>
+        <a href="{{ url_for('join') }}" class="btn btn-ghost">Join Space</a>
+      </div>
+    </div>
+
+    <div class="hero-visual" id="heroVisual">
+      <div class="orbit-ring r1"></div>
+      <div class="orbit-ring r2"></div>
+      <div class="orbit-tile t1" data-icon="video"></div>
+      <div class="orbit-tile t2" data-icon="hand"></div>
+      <div class="orbit-tile t3" data-icon="message-circle"></div>
+      <div class="orbit-tile t4" data-icon="monitor"></div>
+      <div class="space-core">SPACE<br>ACTIVE</div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <h2>One Space, however you connect</h2>
+      <p>From a two-person call to a full offline classroom, Space adapts to the room you're actually in.</p>
+    </div>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-icon" data-icon="globe"></div>
+        <h3>Online Space</h3>
+        <p>Internet-based meetings with WebRTC video, built for reliability at any size.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" data-icon="radio"></div>
+        <h3>LAN Space</h3>
+        <p>Runs entirely offline over local Wi-Fi. Scan a QR code and join — no internet needed.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" data-icon="link"></div>
+        <h3>Helixa Chain</h3>
+        <p>Participants can become Bouncers, relaying the Space to more people than one hotspot allows.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" data-icon="presentation"></div>
+        <h3>Classroom Mode</h3>
+        <p>A dedicated teaching layout with whiteboard, presentation view, and hand-raising built in.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" data-icon="dot"></div>
+        <h3>Laser Pointer</h3>
+        <p>Point to exactly what matters on the whiteboard, live, without marking it permanently.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" data-icon="zap"></div>
+        <h3>No account needed</h3>
+        <p>Create or join a Space in seconds. Sign-in comes later — not a blocker on day one.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  Helixa Space — a Helixa Technologies product
+</footer>
+
+<div class="toast-stack" id="toastStack"></div>
+
+<script src="{{ url_for('static', filename='js/icons.js') }}"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
