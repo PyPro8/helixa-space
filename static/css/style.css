@@ -704,6 +704,21 @@ button { font-family: var(--font-body); cursor: pointer; }
   font-size: 12px;
 }
 
+.tile-sharing-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--hx-blue);
+  color: #fff;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  z-index: 3;
+}
+
 .tile-badge-host {
   font-size: 10px;
   background: var(--hx-blue);
@@ -839,7 +854,7 @@ button { font-family: var(--font-body); cursor: pointer; }
   z-index: 30;
   flex-wrap: nowrap;
   max-width: calc(100vw - 32px);
-  overflow-x: auto;
+  bottom: calc(22px + env(safe-area-inset-bottom, 0px));
 }
 [data-theme="light"] .control-bar {
   background: rgba(255,255,255,0.75);
@@ -1075,6 +1090,37 @@ button { font-family: var(--font-body); cursor: pointer; }
 }
 
 /* ==========================================================================
+   v0.7 — Mobile control dock: show essentials only, fold the rest into More
+   ========================================================================== */
+
+.dock-optional-in-menu { display: none; }
+
+@media (max-width: 560px) {
+  .control-bar {
+    gap: 4px;
+    padding: 8px;
+    max-width: calc(100vw - 20px);
+    bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+  .ctrl-btn {
+    width: 42px;
+    height: 42px;
+    font-size: 16px;
+  }
+  .ctrl-btn.leave { width: 50px; }
+  /* Screen share and raise hand move into the More sheet on small screens
+     so the dock never overflows or requires horizontal scrolling — they
+     stay fully functional, just relocated. */
+  .dock-optional { display: none; }
+  .dock-optional-in-menu { display: flex; }
+}
+
+@media (max-width: 360px) {
+  .ctrl-btn { width: 38px; height: 38px; font-size: 15px; }
+  .control-bar { gap: 2px; padding: 6px; }
+}
+
+/* ==========================================================================
    v0.6 — More menu, participant action menu, roles, audio-unlock banner
    ========================================================================== */
 
@@ -1106,6 +1152,38 @@ button { font-family: var(--font-body); cursor: pointer; }
   text-align: left;
 }
 .more-menu button:hover { background: var(--bg-2); }
+
+@media (max-width: 560px) {
+  .more-menu {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    transform: none;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    border-radius: 20px 20px 0 0;
+    padding: 10px 10px calc(16px + env(safe-area-inset-bottom, 0px));
+    border-bottom: none;
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+  .more-menu.open { display: flex; }
+  .more-menu button {
+    padding: 14px 14px;
+    font-size: 15px;
+  }
+  .more-menu::before {
+    content: '';
+    display: block;
+    width: 36px;
+    height: 4px;
+    background: var(--border-strong);
+    border-radius: 999px;
+    margin: 4px auto 10px;
+  }
+}
 
 .action-menu {
   position: absolute;
@@ -1161,3 +1239,50 @@ button { font-family: var(--font-body); cursor: pointer; }
   cursor: pointer;
 }
 .audio-unlock-banner.show { display: flex; }
+
+/* ==========================================================================
+   v0.7 — Focus (personal), Grid-back button, View-Host control
+   ========================================================================== */
+
+.grid-back-btn {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 15;
+  display: none;
+  align-items: center;
+  gap: 6px;
+  background: rgba(15, 25, 48, 0.75);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border-strong);
+  color: #fff;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  transition: background 0.18s var(--ease);
+}
+.grid-back-btn:hover { background: rgba(15, 25, 48, 0.92); }
+[data-theme="light"] .grid-back-btn { background: rgba(255,255,255,0.85); color: var(--text-0); border-color: var(--border-strong); }
+
+.tile.focus-target { border-color: var(--hx-accent); cursor: pointer; }
+.tile.spotlight-target { cursor: pointer; }
+.tile { cursor: pointer; }
+.tile:hover { border-color: var(--border-strong); }
+
+.view-host-btn {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(11,18,32,0.65);
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(255,255,255,0.15);
+  color: #fff;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+.view-host-btn:hover { background: rgba(11,18,32,0.85); }

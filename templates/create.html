@@ -7,6 +7,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+
+
 </head>
 <body>
 
@@ -28,11 +31,15 @@
       <video id="previewVideo" autoplay muted playsinline style="display:none;"></video>
       <div class="preview-placeholder" id="previewPlaceholder">
         <div class="preview-avatar" id="previewInitial">?</div>
-        <span>Camera is off</span>
+        <span id="previewStatusText">Requesting camera…</span>
       </div>
       <div class="preview-controls">
-        <button class="pill-toggle" id="micToggle" title="Toggle microphone" data-icon="mic"></button>
-        <button class="pill-toggle off" id="camToggle" title="Toggle camera" data-icon="video-off"></button>
+        <button class="pill-toggle off" id="micToggle" title="Toggle microphone" data-icon="mic-off">
+            <i class="bi bi-mic"></i>
+        </button>
+        <button class="pill-toggle off" id="camToggle" title="Toggle camera" data-icon="video-off">
+            <i class="bi bi-camera-video"></i>
+        </button>
       </div>
     </div>
 
@@ -49,7 +56,13 @@
 
       <div class="field">
         <label for="spaceName">Space name (optional)</label>
-        <input type="text" id="spaceName" placeholder="e.g. CHM121 Review Session" maxlength="60">
+        <input type="text" id="spaceName" placeholder="e.g. Tech Space" maxlength="60">
+      </div>
+
+      <div class="field">
+        <label for="spaceIdInput">Space ID <span style="font-weight:400; color:var(--text-2);">(you choose this)</span></label>
+        <input type="text" id="spaceIdInput" placeholder="e.g. CLASS101" maxlength="32" required autocomplete="off" style="text-transform:uppercase;">
+        <span id="spaceIdStatus" style="font-size:12px; min-height:16px; display:block;"></span>
       </div>
 
       <div class="field">
@@ -76,14 +89,6 @@
         <div style="display:flex; gap:8px;">
           <input type="text" id="spaceIdl" placeholder="e.g. HX7K2P" maxlength="12" style="flex:1; text-transform:uppercase;">
           <button type="button" class="btn btn-ghost btn-sm" id="suggestIdlBtn" style="white-space:nowrap;">Suggest</button>
-        </div>
-      </div>
-
-      <div class="field" id="spaceIdField" style="display:none;">
-        <label>Space ID</label>
-        <div class="space-id-display">
-          <span id="spaceIdValue">—</span>
-          <button type="button" class="copy-btn" id="copyIdBtn">Copy</button>
         </div>
       </div>
 

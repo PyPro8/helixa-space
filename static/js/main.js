@@ -87,6 +87,7 @@ HX.initTypingHero = function () {
 HX.initDevicePreview = function () {
   const video = document.getElementById('previewVideo');
   const placeholder = document.getElementById('previewPlaceholder');
+  const statusText = document.getElementById('previewStatusText');
   const initial = document.getElementById('previewInitial');
   const micBtn = document.getElementById('micToggle');
   const camBtn = document.getElementById('camToggle');
@@ -126,6 +127,13 @@ HX.initDevicePreview = function () {
       camOn = false;
       camBtn.classList.add('off');
       paintPreviewIcon(camBtn, 'video-off');
+      if (statusText) statusText.textContent = 'Camera unavailable';
+      // No stream exists, so the mic can't actually be "on" either —
+      // reflect that honestly instead of showing a live-mic icon with
+      // nothing behind it.
+      micOn = false;
+      micBtn.classList.add('off');
+      paintPreviewIcon(micBtn, 'mic-off');
     }
   }
 
@@ -136,6 +144,7 @@ HX.initDevicePreview = function () {
     }
     video.style.display = 'none';
     placeholder.style.display = 'flex';
+    if (statusText) statusText.textContent = 'Camera is off';
     camOn = false;
     camBtn.classList.add('off');
     paintPreviewIcon(camBtn, 'video-off');
@@ -159,6 +168,14 @@ HX.initDevicePreview = function () {
     applyMicState();
   });
 
+  // Request camera/mic as soon as the preview loads, same as most video
+  // call apps — this also removes the dishonest window where the mic
+  // button showed "on" before any audio track actually existed.
+  micBtn.classList.add('off');
+  paintPreviewIcon(micBtn, 'mic-off');
+  micOn = false;
+  startCamera();
+
   if (nameInput) {
     nameInput.addEventListener('input', () => {
       const val = nameInput.value.trim();
@@ -178,14 +195,15 @@ HX.initCreateForm = function () {
 
   const modeOnline = document.getElementById('modeOnline');
   const modeLan = document.getElementById('modeLan');
-  const spaceIdField = document.getElementById('spaceIdField');
-  const spaceIdValue = document.getElementById('spaceIdValue');
-  const copyBtn = document.getElementById('copyIdBtn');
+  const spaceIdInput = document.getElementById('spaceIdInput');
+  const spaceIdStatus = document.getElementById('spaceIdStatus');
   const submitBtn = form.querySelector('button[type="submit"]');
   const idlInput = document.getElementById('spaceIdl');
   const suggestIdlBtn = document.getElementById('suggestIdlBtn');
 
   let mode = 'online';
+  let idCheckTimer = null;
+  let idIsAvailable = false;
 
   function selectMode(target) {
     mode = target;
@@ -196,9 +214,31 @@ HX.initCreateForm = function () {
   modeOnline.addEventListener('click', () => selectMode('online'));
   modeLan.addEventListener('click', () => selectMode('lan'));
 
-  copyBtn.addEventListener('click', () => {
-    if (spaceIdValue.textContent === '—') return;
-    navigator.clipboard.writeText(spaceIdValue.textContent).then(() => HX.toast('Space ID copied'));
+  function setIdStatus(text, ok) {
+    spaceIdStatus.textContent = text;
+    spaceIdStatus.style.color = ok === true ? 'var(--ok)' : ok === false ? 'var(--danger)' : 'var(--text-2)';
+  }
+
+  spaceIdInput.addEventListener('input', () => {
+    spaceIdInput.value = spaceIdInput.value.toUpperCase();
+    idIsAvailable = false;
+    clearTimeout(idCheckTimer);
+    const val = spaceIdInput.value.trim();
+    if (!val) {
+      setIdStatus('', null);
+      return;
+    }
+    setIdStatus('Checking…', null);
+    idCheckTimer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/spaces/check-id/${encodeURIComponent(val)}`);
+        const data = await res.json();
+        idIsAvailable = !!data.available;
+        setIdStatus(data.available ? 'Available' : data.error, data.available);
+      } catch (err) {
+        setIdStatus('', null); // can't reach server yet — the submit handler will report it
+      }
+    }, 400);
   });
 
   suggestIdlBtn.addEventListener('click', async () => {
@@ -221,7 +261,8 @@ HX.initCreateForm = function () {
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const name = document.getElementById('displayName').value.trim();
-    if (!name) return;
+    const spaceId = spaceIdInput.value.trim();
+    if (!name || !spaceId) return;
 
     const spaceName = document.getElementById('spaceName').value.trim();
     const password = document.getElementById('spacePassword').value;
@@ -230,16 +271,20 @@ HX.initCreateForm = function () {
     submitBtn.disabled = true;
     submitBtn.textContent = 'Creating…';
 
-    let spaceId, resolvedIdl;
+    let resolvedIdl;
     try {
       const res = await fetch('/api/spaces', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ spaceName, password, idl }),
+        body: JSON.stringify({ spaceId, spaceName, password, idl }),
       });
-      if (!res.ok) throw new Error('Server error');
       const data = await res.json();
-      spaceId = data.spaceId;
+      if (!res.ok) {
+        setIdStatus(data.error || 'That Space ID is not available.', false);
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Start Space';
+        return;
+      }
       resolvedIdl = data.idl;
       if (idl && !resolvedIdl) {
         HX.toast(`"${idl}" was already taken — Space created without a Space IDL`);
@@ -250,9 +295,6 @@ HX.initCreateForm = function () {
       submitBtn.textContent = 'Start Space';
       return;
     }
-
-    spaceIdValue.textContent = spaceId;
-    spaceIdField.style.display = 'flex';
 
     if (mode === 'lan') {
       HX.toast('LAN Space mode arrives in v0.8 — starting as an online Space for now');

@@ -32,6 +32,10 @@
         <button id="stopShareBtn">Stop sharing</button>
       </div>
 
+      <button class="grid-back-btn" id="gridBackBtn" title="Back to grid" data-icon="grid" style="display:none;">
+        <span>Grid</span>
+      </button>
+
       <div class="video-grid" id="videoGrid"></div>
 
       <div class="reactions-tray" id="reactionsTray">
@@ -64,13 +68,13 @@
     </div>
   </div>
 
-  <div class="control-bar">
+  <div class="control-bar" id="controlBar">
     <button class="ctrl-btn active" id="micBtn" title="Mute microphone" data-icon-on="mic" data-icon-off="mic-off"></button>
     <button class="ctrl-btn active" id="camBtn" title="Turn off camera" data-icon-on="video" data-icon-off="video-off"></button>
     <span class="dock-divider"></span>
-    <button class="ctrl-btn" id="shareBtn" title="Share screen" data-icon="monitor"></button>
-    <button class="ctrl-btn" id="handBtn" title="Raise hand" data-icon="hand"></button>
-    <span class="dock-divider"></span>
+    <button class="ctrl-btn dock-optional" id="shareBtn" title="Share screen" data-icon="monitor"></button>
+    <button class="ctrl-btn dock-optional" id="handBtn" title="Raise hand" data-icon="hand"></button>
+    <span class="dock-divider dock-optional"></span>
     <button class="ctrl-btn" id="chatBtn" title="Chat" data-icon="message-circle">
       <span class="ctrl-badge" id="chatBadge" style="display:none;">0</span>
     </button>
@@ -83,6 +87,8 @@
   </div>
 
   <div class="more-menu" id="moreMenu">
+    <button id="shareMenuBtn" class="dock-optional-in-menu" data-icon="monitor">Share screen</button>
+    <button id="handMenuBtn" class="dock-optional-in-menu" data-icon="hand">Raise hand</button>
     <button id="reactMenuBtn" data-icon="smile">Reactions</button>
     <button id="fullscreenMenuBtn" data-icon="maximize">Fullscreen</button>
     <button id="qrMenuBtn" data-icon="qr-code">Show join QR</button>

@@ -44,7 +44,8 @@
     camOn: true,
     handRaised: false,
     sharing: false,
-    spotlightId: null, // null = grid view
+    spotlightId: null, // null = grid view (host-controlled, synced)
+    focusId: null, // null = grid view (personal, click-driven, never synced)
     localStream: null,
     screenStream: null,
     peers: {}, // id -> { pc, name, mic, cam, hand_raised, role, videoEl }
@@ -161,6 +162,8 @@
   const moreBtn = document.getElementById('moreBtn');
   const moreMenu = document.getElementById('moreMenu');
   const reactMenuBtn = document.getElementById('reactMenuBtn');
+  const shareMenuBtn = document.getElementById('shareMenuBtn');
+  const handMenuBtn = document.getElementById('handMenuBtn');
   const fullscreenMenuBtn = document.getElementById('fullscreenMenuBtn');
   const qrMenuBtn = document.getElementById('qrMenuBtn');
   const leaveBtn = document.getElementById('leaveBtn');
@@ -201,6 +204,7 @@
     tile.innerHTML = `
       <video ${isLocal ? 'class="mirrored"' : ''} autoplay playsinline></video>
       <div class="tile-avatar" style="display:none;">${initials(name)}</div>
+      <span class="tile-sharing-badge" style="display:none;" title="Sharing screen">${HXIcon.svg('monitor', { size: 12 })}</span>
       <div class="tile-label">
         <span class="tile-name">${escapeHtml(name)}${isLocal ? ' (You)' : ''}</span>
         <span class="tile-mic-off" style="display:none;">${HXIcon.svg('mic-off', { size: 12 })}</span>
@@ -208,6 +212,13 @@
     `;
     videoGrid.appendChild(tile);
     return tile;
+  }
+
+  function updateTileSharingBadge(id, sharing) {
+    const tile = document.getElementById(tileId(id));
+    if (!tile) return;
+    const badge = tile.querySelector('.tile-sharing-badge');
+    if (badge) badge.style.display = sharing ? 'flex' : 'none';
   }
 
   function escapeHtml(str) {
@@ -260,13 +271,20 @@
     tile.querySelector('.tile-mic-off').style.display = micOn ? 'none' : 'flex';
   }
 
+  // Focus (personal, click-driven, not synced) takes visual priority over
+  // Spotlight (host-controlled, synced) on the viewer's own screen — the
+  // two are independent per spec: clicking a tile never affects anyone
+  // else's view, and it never overrides the host's spotlight for others.
   function renderLayout() {
-    videoGrid.classList.toggle('spotlighted', !!state.spotlightId);
+    const mainId = state.focusId || state.spotlightId;
+    videoGrid.classList.toggle('spotlighted', !!mainId);
+    gridBackBtn.style.display = mainId ? 'flex' : 'none';
+
     const applyClass = (id, tile) => {
-      tile.classList.remove('spot-main', 'spot-rail-tile', 'spotlight-target');
-      if (!state.spotlightId) return;
-      if (id === state.spotlightId) {
-        tile.classList.add('spot-main', 'spotlight-target');
+      tile.classList.remove('spot-main', 'spot-rail-tile', 'spotlight-target', 'focus-target');
+      if (!mainId) return;
+      if (id === mainId) {
+        tile.classList.add('spot-main', state.focusId ? 'focus-target' : 'spotlight-target');
       } else {
         tile.classList.add('spot-rail-tile');
       }
@@ -277,7 +295,57 @@
     });
     const localTile = document.getElementById(tileId('local'));
     if (localTile) applyClass('local', localTile);
+    renderViewHostButton();
   }
+
+  function setFocus(id) {
+    // Clicking the currently-focused tile again returns to grid.
+    state.focusId = state.focusId === id ? null : id;
+    renderLayout();
+  }
+
+  // "View Host" — a small contextual control (not a permanent banner) that
+  // lets a participant bring the host into their own main view, without
+  // affecting anyone else's layout.
+  function findHostId() {
+    for (const [id, info] of Object.entries(state.peers)) {
+      if (info.role === 'host') return id;
+    }
+    return null;
+  }
+
+  function renderViewHostButton() {
+    const existing = document.getElementById('viewHostBtn');
+    if (existing) existing.remove();
+
+    if (isHost()) return; // hosts don't need a button to view themselves
+    const hostId = findHostId();
+    if (!hostId || state.focusId === hostId || state.spotlightId === hostId) return;
+
+    const btn = document.createElement('button');
+    btn.id = 'viewHostBtn';
+    btn.className = 'view-host-btn';
+    btn.innerHTML = `${HXIcon.svg('user-check', { size: 13 })} <span>View Host</span>`;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setFocus(hostId);
+    });
+    document.getElementById('stage').appendChild(btn);
+  }
+
+  videoGrid.addEventListener('click', (e) => {
+    const tile = e.target.closest('.tile');
+    if (!tile) return;
+    // Ignore clicks on interactive controls inside a tile, if any are added later.
+    if (e.target.closest('button')) return;
+    setFocus(tile.id.replace('tile-', ''));
+  });
+
+  const gridBackBtn = document.getElementById('gridBackBtn');
+  gridBackBtn.addEventListener('click', () => {
+    state.focusId = null;
+    renderLayout();
+  });
 
   HX.toastMeeting = window.HX ? window.HX.toast : () => {};
 
@@ -343,8 +411,18 @@
     const pc = new RTCPeerConnection(ICE_SERVERS);
 
     if (state.localStream && state.localStream.getTracks().length) {
-      state.localStream.getTracks().forEach((track) => pc.addTrack(track, state.localStream));
-      Diag.log('info', `Added ${state.localStream.getTracks().length} local track(s) to peer ${remoteId.slice(0, 6)}`);
+      const audioTracks = state.localStream.getAudioTracks();
+      // If we're mid screen-share when a new peer connects, send the
+      // screen track as the outgoing video, not the (paused) camera —
+      // otherwise a late joiner would see our camera while everyone
+      // else sees our screen, a silent desync the v0.7 audit flagged.
+      const videoTrack = state.sharing && state.screenStream
+        ? state.screenStream.getVideoTracks()[0]
+        : state.localStream.getVideoTracks()[0];
+
+      if (videoTrack) pc.addTrack(videoTrack, state.localStream);
+      audioTracks.forEach((track) => pc.addTrack(track, state.localStream));
+      Diag.log('info', `Added local tracks to peer ${remoteId.slice(0, 6)} (video: ${state.sharing ? 'screen' : 'camera'})`);
     } else {
       Diag.log('warn', `No local tracks available when connecting to ${remoteId.slice(0, 6)} — this would create a data-only connection`);
     }
@@ -381,6 +459,7 @@
   }
 
   async function callPeer(remoteId, name) {
+    if (remoteId === state.myId) return; // never create a peer connection to ourselves
     const pc = createPeerConnection(remoteId);
     state.peers[remoteId] = { pc, name, mic: true, cam: true, hand_raised: false, role: 'participant' };
     createTile(remoteId, name, false);
@@ -391,6 +470,7 @@
   }
 
   async function handleOffer({ from, sdp }) {
+    if (from === state.myId) return; // guard: never treat our own socket id as a remote peer
     let entry = state.peers[from];
     if (!entry || !entry.pc) {
       const pc = createPeerConnection(from);
@@ -463,8 +543,10 @@
     await getLocalMedia();
     renderLocalTile();
 
-    // Call everyone already in the room
+    // Call everyone already in the room (skip ourselves defensively —
+    // the server already excludes us, but never assume that blindly)
     for (const [id, info] of Object.entries(data.participants)) {
+      if (id === state.myId) continue;
       await callPeer(id, info.name);
       state.peers[id].mic = info.mic;
       state.peers[id].cam = info.cam;
@@ -475,6 +557,7 @@
   });
 
   socket.on('participant-joined', (info) => {
+    if (info.id === state.myId) return; // guard: the server should never echo our own join to us, but never trust that blindly
     state.peers[info.id] = {
       pc: null,
       name: info.name,
@@ -500,8 +583,10 @@
       entry.cam = info.cam;
       entry.hand_raised = info.hand_raised;
       entry.role = info.role;
+      entry.screen_sharing = info.screen_sharing;
     }
     updateTileMicIcon(info.id, info.mic);
+    updateTileSharingBadge(info.id, info.screen_sharing);
     updateParticipantsPanel();
   });
 
@@ -586,12 +671,13 @@
   micBtn.addEventListener('click', () => setMic(!state.micOn));
   camBtn.addEventListener('click', () => setCam(!state.camOn));
 
-  handBtn.addEventListener('click', () => {
+  function toggleHand() {
     state.handRaised = !state.handRaised;
     socket.emit('raise-hand', { raised: state.handRaised });
     updateControlButtonStates();
     window.HX.toast(state.handRaised ? 'Hand raised' : 'Hand lowered');
-  });
+  }
+  handBtn.addEventListener('click', toggleHand);
 
   // -------------------------------------------------------------- more menu
 
@@ -608,6 +694,14 @@
   reactMenuBtn.addEventListener('click', () => {
     moreMenu.classList.remove('open');
     reactionsTray.classList.toggle('open');
+  });
+  shareMenuBtn.addEventListener('click', () => {
+    moreMenu.classList.remove('open');
+    toggleScreenShare();
+  });
+  handMenuBtn.addEventListener('click', () => {
+    moreMenu.classList.remove('open');
+    toggleHand();
   });
   fullscreenMenuBtn.addEventListener('click', () => {
     moreMenu.classList.remove('open');
@@ -715,6 +809,8 @@
     Object.entries(state.peers).forEach(([id, info]) => {
       participantsList.appendChild(buildParticipantRow(id, info.name, info.mic, info.cam, info.hand_raised, info.role || 'participant', false));
     });
+
+    renderViewHostButton();
   }
 
   function roleBadge(role) {
@@ -824,6 +920,11 @@
   // ------------------------------------------------------------- screen share
 
   async function startScreenShare() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+      window.HX.toast('Screen sharing is not supported in this browser.');
+      Diag.log('warn', 'getDisplayMedia unavailable — unsupported browser/device');
+      return;
+    }
     try {
       const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
       state.screenStream = screenStream;
@@ -838,12 +939,21 @@
       setTileStream('local', screenStream, true);
       state.sharing = true;
       sharingBanner.style.display = 'flex';
+      updateTileSharingBadge('local', true);
       socket.emit('screen-share-state', { sharing: true });
       updateControlButtonStates();
 
       screenTrack.onended = () => stopScreenShare();
     } catch (err) {
-      // user cancelled the picker — not an error worth surfacing loudly
+      // NotAllowedError covers both "user clicked cancel" and "OS/browser
+      // denied permission" — the spec wants cancellation silent but real
+      // failures visible, and the DOMException gives no way to tell them
+      // apart, so we log to diagnostics either way and only toast for
+      // errors that are clearly not a simple cancel.
+      Diag.log('info', `Screen share not started: ${err.name || err.message}`);
+      if (err.name !== 'NotAllowedError') {
+        window.HX.toast('Could not start screen sharing.');
+      }
     }
   }
 
@@ -861,14 +971,16 @@
     setTileStream('local', state.camOn ? state.localStream : null, true);
     state.sharing = false;
     sharingBanner.style.display = 'none';
+    updateTileSharingBadge('local', false);
     socket.emit('screen-share-state', { sharing: false });
     updateControlButtonStates();
   }
 
-  shareBtn.addEventListener('click', () => {
+  function toggleScreenShare() {
     if (state.sharing) stopScreenShare();
     else startScreenShare();
-  });
+  }
+  shareBtn.addEventListener('click', toggleScreenShare);
   stopShareBtn.addEventListener('click', stopScreenShare);
 
   // -------------------------------------------------------------- fullscreen

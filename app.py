@@ -15,6 +15,7 @@ WebRTC offer/answer/ICE messages) plus chat/control events. Media itself
 touches this server.
 """
 
+import os
 import random
 import time
 
@@ -22,7 +23,7 @@ from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit, join_room, leave_room
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = "helixa-space-dev-secret"  # replace for production
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "helixa-space-dev-secret")
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 # ---------------------------------------------------------------------------
@@ -53,11 +54,6 @@ idl_index = {}  # idl -> space_id, kept in sync with rooms_state for O(1) lookup
 ROLE_HOST = "host"
 ROLE_COHOST = "co-host"
 ROLE_PARTICIPANT = "participant"
-
-
-def gen_space_id():
-    chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no ambiguous chars
-    return "HELIXA-" + "".join(random.choices(chars, k=6))
 
 
 def gen_space_idl():
@@ -121,10 +117,33 @@ def meeting(space_id):
 # Space IDL (passwordless quick-join) suggestion/lookup.
 # ---------------------------------------------------------------------------
 
+import re
+
+VALID_SPACE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,31}$")
+
+
+def validate_space_id(raw):
+    """Returns (clean_id, error_message). error_message is None on success.
+    Per the v0.7 spec, the host chooses the Space ID — this only checks
+    format and availability, it never invents a replacement value."""
+    candidate = (raw or "").strip()
+    if not candidate:
+        return None, "Space ID is required."
+    if not VALID_SPACE_ID_RE.match(candidate):
+        return None, "Space ID must be 3–32 characters: letters, numbers, hyphens or underscores only, and can't start with a hyphen or underscore."
+    if candidate in rooms_state:
+        return None, f'"{candidate}" is already in use — choose a different Space ID.'
+    return candidate, None
+
+
 @app.route("/api/spaces", methods=["POST"])
 def create_space():
     data = request.get_json(force=True) or {}
-    space_id = gen_space_id()
+
+    space_id, error = validate_space_id(data.get("spaceId"))
+    if error:
+        return jsonify({"error": error}), 400
+
     password = (data.get("password") or "").strip()
     requested_idl = (data.get("idl") or "").strip().upper() or None
 
@@ -140,6 +159,14 @@ def create_space():
         idl_index[idl] = space_id
 
     return jsonify({"spaceId": space_id, "idl": idl})
+
+
+@app.route("/api/spaces/check-id/<space_id>", methods=["GET"])
+def check_space_id(space_id):
+    """Lets the create form validate the host's chosen ID as they type,
+    before submitting — same validation the POST endpoint enforces."""
+    clean, error = validate_space_id(space_id)
+    return jsonify({"available": error is None, "error": error})
 
 
 @app.route("/api/spaces/suggest-idl", methods=["GET"])
