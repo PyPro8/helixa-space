@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Space Details — Helixa Space</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="{{ url_for('index') }}" class="brand">
+      <span class="brand-mark">H</span>
+      Helixa Space
+    </a>
+    <div class="nav-actions">
+      <button class="theme-toggle" id="themeToggle" title="Toggle theme" aria-label="Toggle theme"></button>
+    </div>
+  </div>
+</nav>
+
+<div class="setup-shell">
+  <div class="details-card" id="detailsCard" data-space-id="{{ space_id }}">
+    <div class="details-head">
+      <h2 id="detailsSpaceName">Helixa Space</h2>
+      <p style="font-size:13px;">Your Space is ready. Share these details with participants, then proceed when you're ready to start.</p>
+    </div>
+
+    <div class="details-row">
+      <div class="details-label">Space ID</div>
+      <div class="details-value-row">
+        <span class="details-value mono" id="detailIdValue">{{ space_id }}</span>
+        <button type="button" class="copy-btn" data-copy-target="detailIdValue">Copy</button>
+      </div>
+    </div>
+
+    <div class="details-row" id="detailPasswordRow" style="display:none;">
+      <div class="details-label">Password</div>
+      <div class="details-value-row">
+        <span class="details-value mono" id="detailPasswordValue" data-revealed="false">••••••••</span>
+        <button type="button" class="copy-btn" id="togglePasswordBtn">Show</button>
+        <button type="button" class="copy-btn" data-copy-target="detailPasswordValue" data-copy-raw="true">Copy</button>
+      </div>
+    </div>
+
+    <div class="details-row" id="detailIdlRow" style="display:none;">
+      <div class="details-label">Space IDL</div>
+      <div class="details-value-row">
+        <span class="details-value mono" id="detailIdlValue">—</span>
+        <button type="button" class="copy-btn" data-copy-target="detailIdlValue">Copy</button>
+      </div>
+    </div>
+
+    <div class="details-row" id="detailCoHostRow" style="display:none;">
+      <div class="details-label">Co-host Key</div>
+      <div class="details-value-row">
+        <span class="details-value mono" id="detailCoHostValue" data-revealed="false">••••••••••••</span>
+        <button type="button" class="copy-btn" id="toggleCoHostBtn">Show</button>
+        <button type="button" class="copy-btn" data-copy-target="detailCoHostValue" data-copy-raw="true">Copy</button>
+      </div>
+    </div>
+
+    <div class="details-qr-wrap">
+      <img id="detailsQrImg" alt="QR code to join this Space" width="180" height="180">
+    </div>
+
+    <div class="details-status" id="detailsStatus">
+      <span class="eyebrow-dot" style="background: var(--text-2); box-shadow:none;"></span>
+      Not started yet — you'll start it when you proceed
+    </div>
+
+    <button type="button" class="btn btn-primary" id="proceedBtn" style="width:100%; margin-top:8px;">Proceed to Space</button>
+  </div>
+</div>
+
+<div class="toast-stack" id="toastStack"></div>
+
+<script src="{{ url_for('static', filename='js/icons.js') }}"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+<script src="{{ url_for('static', filename='js/space-details.js') }}"></script>
+</body>
+</html>

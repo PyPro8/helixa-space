@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Join Space — Helixa Space</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="{{ url_for('index') }}" class="brand">
+      <span class="brand-mark">H</span>
+      Helixa Space
+    </a>
+    <div class="nav-actions">
+      <button class="theme-toggle" id="themeToggle" title="Toggle theme" aria-label="Toggle theme"></button>
+    </div>
+  </div>
+</nav>
+
+<div class="setup-shell">
+  <div class="setup-card">
+    <div class="setup-preview">
+      <video id="previewVideo" autoplay muted playsinline style="display:none;"></video>
+      <div class="preview-placeholder" id="previewPlaceholder">
+        <div class="preview-avatar" id="previewInitial">?</div>
+        <span id="previewStatusText">Requesting camera…</span>
+      </div>
+      <div class="preview-controls">
+        <button class="pill-toggle off" id="micToggle" title="Toggle microphone" data-icon="mic-off"></button>
+        <button class="pill-toggle off" id="camToggle" title="Toggle camera" data-icon="video-off"></button>
+      </div>
+    </div>
+
+    <form class="setup-form" id="joinForm">
+      <div>
+        <h2 style="font-size:22px; margin-bottom:4px;">Join a Space</h2>
+        <p style="font-size:13px;">Choose how you'd like to join.</p>
+      </div>
+
+      <div class="field">
+        <label for="displayNameJoin">Your name</label>
+        <input type="text" id="displayNameJoin" placeholder="e.g. Participant" required maxlength="40">
+      </div>
+
+      <div class="mode-select" style="margin-bottom:4px;">
+        <div class="mode-option active" data-join-method="id" id="methodId">
+          <div class="mode-option-title"><span data-icon="lock" style="width:15px;height:15px;"></span> Space ID</div>
+          <div class="mode-option-desc">Meeting ID + password</div>
+        </div>
+        <div class="mode-option" data-join-method="idl" id="methodIdl">
+          <div class="mode-option-title"><span data-icon="zap" style="width:15px;height:15px;"></span> Space IDL</div>
+          <div class="mode-option-desc">Quick access, no password</div>
+        </div>
+      </div>
+
+      <div id="joinWithId">
+        <div class="field">
+          <label for="spaceIdInput">Meeting ID or link</label>
+          <input type="text" id="spaceIdInput" placeholder="HELIXA-8F4K2P">
+        </div>
+        <div class="field password-field">
+          <label for="joinPassword">Password <span style="font-weight:400; color:var(--text-2);">(if the Space is locked)</span></label>
+          <input type="password" id="joinPassword" placeholder="Leave blank if none" maxlength="40" autocomplete="current-password">
+        </div>
+        <div class="field password-field">
+          <label for="joinCoHostKey">Co-host Key <span style="font-weight:400; color:var(--text-2);">(optional — lets you start the Space and act as co-host)</span></label>
+          <input type="text" id="joinCoHostKey" placeholder="e.g. CH-8K4X-29QP" maxlength="20" style="text-transform:uppercase;" autocomplete="off">
+        </div>
+      </div>
+
+      <div id="joinWithIdl" style="display:none;">
+        <div class="field">
+          <label for="spaceIdlInput">Meeting IDL</label>
+          <input type="text" id="spaceIdlInput" placeholder="e.g. HX7K2P" style="text-transform:uppercase;">
+        </div>
+      </div>
+
+      <button type="submit" class="btn btn-primary" style="margin-top:8px;">Join Space</button>
+    </form>
+  </div>
+</div>
+
+<div class="toast-stack" id="toastStack"></div>
+
+<script src="{{ url_for('static', filename='js/icons.js') }}"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

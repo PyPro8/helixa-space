@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Create Space — Helixa Space</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="{{ url_for('index') }}" class="brand">
+      <span class="brand-mark">H</span>
+      Helixa Space
+    </a>
+    <div class="nav-actions">
+      <button class="theme-toggle" id="themeToggle" title="Toggle theme" aria-label="Toggle theme"></button>
+    </div>
+  </div>
+</nav>
+
+<div class="setup-shell">
+  <div class="setup-card">
+    <div class="setup-preview">
+      <video id="previewVideo" autoplay muted playsinline style="display:none;"></video>
+      <div class="preview-placeholder" id="previewPlaceholder">
+        <div class="preview-avatar" id="previewInitial">?</div>
+        <span id="previewStatusText">Requesting camera…</span>
+      </div>
+      <div class="preview-controls">
+        <button class="pill-toggle off" id="micToggle" title="Toggle microphone" data-icon="mic-off"></button>
+        <button class="pill-toggle off" id="camToggle" title="Toggle camera" data-icon="video-off"></button>
+      </div>
+    </div>
+
+    <form class="setup-form" id="createForm">
+      <div>
+        <h2 style="font-size:22px; margin-bottom:4px;">Create your Space</h2>
+        <p style="font-size:13px;">Set up your name and preferences before starting.</p>
+      </div>
+
+      <div class="field">
+        <label for="displayName">Your name</label>
+        <input type="text" id="displayName" placeholder="e.g. Participant" required maxlength="40">
+      </div>
+
+      <div class="field">
+        <label for="spaceName">Space name (optional)</label>
+        <input type="text" id="spaceName" placeholder="e.g. CHM121 Review Session" maxlength="60">
+      </div>
+
+      <div class="field">
+        <label for="spaceIdInput">Space ID <span style="font-weight:400; color:var(--text-2);">(you choose this)</span></label>
+        <input type="text" id="spaceIdInput" placeholder="e.g. CLASS101" maxlength="32" required autocomplete="off" style="text-transform:uppercase;">
+        <span id="spaceIdStatus" style="font-size:12px; min-height:16px; display:block;"></span>
+      </div>
+
+      <div class="field">
+        <label>Meeting mode</label>
+        <div class="mode-select">
+          <div class="mode-option active" data-mode="online" id="modeOnline">
+            <div class="mode-option-title"><span data-icon="monitor" style="width:15px;height:15px;"></span> Online Space</div>
+            <div class="mode-option-desc">Internet-based meeting</div>
+          </div>
+          <div class="mode-option" data-mode="lan" id="modeLan">
+            <div class="mode-option-title"><span data-icon="qr-code" style="width:15px;height:15px;"></span> LAN Space</div>
+            <div class="mode-option-desc">Offline, local network only</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="field password-field">
+        <label for="spacePassword">Password (optional)</label>
+        <input type="password" id="spacePassword" placeholder="Leave blank for no password" maxlength="40" autocomplete="new-password">
+      </div>
+
+      <div class="field password-field">
+        <label for="spaceIdl">Space IDL <span style="font-weight:400; color:var(--text-2);">(optional — quick, passwordless join code)</span></label>
+        <div class="idl-input-row">
+          <input type="text" id="spaceIdl" placeholder="e.g. HX7K2P" maxlength="12" style="text-transform:uppercase;">
+          <button type="button" class="btn btn-ghost btn-sm" id="suggestIdlBtn">Suggest</button>
+        </div>
+      </div>
+
+      <div class="field password-field">
+        <label class="checkbox-field">
+          <input type="checkbox" id="generateCoHostKey">
+          <span>Generate a Co-host Key <span style="font-weight:400; color:var(--text-2);">(lets a trusted person start this Space and act as co-host)</span></span>
+        </label>
+      </div>
+
+      <button type="submit" class="btn btn-primary" style="margin-top:8px;">Continue</button>
+    </form>
+  </div>
+</div>
+
+<div class="toast-stack" id="toastStack"></div>
+
+<script src="{{ url_for('static', filename='js/icons.js') }}"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

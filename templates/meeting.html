@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Space — Helixa Space</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<div class="meeting-shell" id="meetingShell" data-space-id="{{ space_id }}">
+
+  <div class="meeting-topbar">
+    <div class="meeting-topbar-left">
+      <span class="brand-mark" style="width:22px;height:22px;font-size:11px;">H</span>
+      <span class="meeting-space-name" id="meetingSpaceName">Helixa Space</span>
+      <span class="space-id-chip" id="spaceIdChip">{{ space_id }}</span>
+      <span class="space-id-chip" id="lockedChip" style="display:none; gap:4px; align-items:center;" data-icon="lock"></span>
+    </div>
+    <div style="display:flex; align-items:center; gap:16px;">
+      <button class="ctrl-btn" id="qrBtn" title="Show join QR code" data-icon="qr-code" style="width:36px;height:36px;font-size:14px;"></button>
+      <span class="hx-clock" id="hxClock">--:--</span>
+      <button class="theme-toggle" id="themeToggle" title="Toggle theme" aria-label="Toggle theme"></button>
+    </div>
+  </div>
+
+  <div class="meeting-body">
+    <div class="stage" id="stage">
+      <div class="sharing-banner" id="sharingBanner" style="display:none;">
+        <span>🖥️ You are sharing your screen</span>
+        <button id="stopShareBtn">Stop sharing</button>
+      </div>
+
+      <button class="grid-back-btn" id="gridBackBtn" title="Back to grid" data-icon="grid" style="display:none;">
+        <span>Grid</span>
+      </button>
+
+      <div class="video-grid" id="videoGrid"></div>
+
+      <div class="reactions-tray" id="reactionsTray">
+        <button data-icon="thumbs-up" title="Like"></button>
+        <button data-icon="heart" title="Love"></button>
+        <button data-icon="laugh" title="Laugh"></button>
+        <button data-icon="star" title="Great"></button>
+        <button data-icon="party-popper" title="Celebrate"></button>
+      </div>
+    </div>
+
+    <div class="side-panel" id="chatPanel" style="display:none;">
+      <div class="side-panel-head">
+        <h3>Chat</h3>
+        <button class="panel-close" data-close="chatPanel" data-icon="x"></button>
+      </div>
+      <div class="side-panel-body" id="chatMessages"></div>
+      <div class="chat-input-row">
+        <input type="text" id="chatInput" placeholder="Message everyone" maxlength="2000">
+        <button class="chat-send-btn" id="chatSendBtn" data-icon="send"></button>
+      </div>
+    </div>
+
+    <div class="side-panel" id="participantsPanel" style="display:none;">
+      <div class="side-panel-head">
+        <h3>Participants (<span id="participantCount">1</span>)</h3>
+        <button class="panel-close" data-close="participantsPanel" data-icon="x"></button>
+      </div>
+      <div class="side-panel-body" id="participantsList"></div>
+    </div>
+  </div>
+
+  <div class="control-bar" id="controlBar">
+    <button class="ctrl-btn active" id="micBtn" title="Mute microphone" data-icon-on="mic" data-icon-off="mic-off"></button>
+    <button class="ctrl-btn active" id="camBtn" title="Turn off camera" data-icon-on="video" data-icon-off="video-off"></button>
+    <span class="dock-divider"></span>
+    <button class="ctrl-btn dock-optional" id="shareBtn" title="Share screen" data-icon="monitor"></button>
+    <button class="ctrl-btn dock-optional" id="handBtn" title="Raise hand" data-icon="hand"></button>
+    <span class="dock-divider dock-optional"></span>
+    <button class="ctrl-btn" id="chatBtn" title="Chat" data-icon="message-circle">
+      <span class="ctrl-badge" id="chatBadge" style="display:none;">0</span>
+    </button>
+    <button class="ctrl-btn" id="participantsBtn" title="Participants" data-icon="users">
+      <span class="ctrl-badge" id="participantsBadge">1</span>
+    </button>
+    <button class="ctrl-btn" id="moreBtn" title="More" data-icon="more-vertical"></button>
+    <span class="dock-divider"></span>
+    <button class="ctrl-btn leave" id="leaveBtn" title="Leave Space" data-icon="phone-off"></button>
+  </div>
+
+  <div class="more-menu" id="moreMenu">
+    <button id="shareMenuBtn" class="dock-optional-in-menu" data-icon="monitor">Share screen</button>
+    <button id="handMenuBtn" class="dock-optional-in-menu" data-icon="hand">Raise hand</button>
+    <button id="reactMenuBtn" data-icon="smile">Reactions</button>
+    <button id="fullscreenMenuBtn" data-icon="maximize">Fullscreen</button>
+    <button id="qrMenuBtn" data-icon="qr-code">Show join QR</button>
+    <button id="admissionModeBtn" data-icon="user-check" style="display:none;">
+      Admin Admission <span id="admissionModeToggle" style="margin-left:auto; font-weight:700; color:var(--text-2);">OFF</span>
+    </button>
+    <button id="endMeetingMenuBtn" data-icon="phone-off" style="display:none; color:var(--danger);">End Meeting</button>
+  </div>
+</div>
+
+<div class="end-meeting-modal-backdrop" id="endMeetingModalBackdrop">
+  <div class="end-meeting-modal">
+    <h3>End this meeting?</h3>
+    <p>Everyone will be disconnected from this Space.</p>
+    <div class="end-meeting-modal-actions">
+      <button class="btn btn-ghost" id="endMeetingCancelBtn">Cancel</button>
+      <button class="btn btn-primary" id="endMeetingConfirmBtn" style="background:var(--danger); box-shadow:none;">End Meeting</button>
+    </div>
+  </div>
+</div>
+
+<div class="ad-box" id="adBox">
+  <div class="ad-box-label">Advertisement</div>
+  <div style="position:relative;">
+    <video id="adVideo" muted autoplay playsinline></video>
+    <span class="ad-mute-icon" data-icon="mic-off"></span>
+  </div>
+</div>
+
+<div class="audio-unlock-banner" id="audioUnlockBanner">Tap to enable audio</div>
+
+<div class="toast-stack" id="toastStack"></div>
+
+<div class="qr-modal-backdrop" id="qrModalBackdrop">
+  <div class="qr-modal">
+    <div class="side-panel-head" style="border:none; padding:0 0 16px;">
+      <h3>Scan to join</h3>
+      <button class="panel-close" id="qrCloseBtn" data-icon="x"></button>
+    </div>
+    <div id="qrCanvasWrap" style="display:flex; justify-content:center; padding:12px; background:#fff; border-radius:10px;"></div>
+    <p style="text-align:center; margin-top:14px; font-size:13px;" id="qrJoinUrl"></p>
+  </div>
+</div>
+
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="{{ url_for('static', filename='js/icons.js') }}"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+<script src="{{ url_for('static', filename='js/meeting.js') }}"></script>
+</body>
+</html>
