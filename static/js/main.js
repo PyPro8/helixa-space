@@ -1,6 +1,6 @@
 // ==========================================================================
 // HELIXA SPACE — main.js
-// Shared logic for landing, create, and join pages.
+// Shared logic for landing, create, and join pages. the work
 // ==========================================================================
 
 const HX = {};
