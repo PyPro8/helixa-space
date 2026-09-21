@@ -119,10 +119,15 @@ def _new_room(name, password=None, idl=None, co_host_key=None):
         "host_sid": None,
         "admission_mode": False,
         "blocked_tokens": set(),
+        "blocked_names": {},  # participant_token -> name at time of block, for the management UI
         "pending_admission": {},
+        "blocked_retry_notified_at": {},  # participant_token -> last notify time, for rate limiting
         "created_at": time.time(),
         "participants": {},
     }
+
+
+BLOCKED_RETRY_NOTIFY_COOLDOWN = 30  # seconds between "removed participant is trying to join" notices per person
 
 
 def _can_moderate(info):
@@ -335,6 +340,15 @@ def handle_join_space(data):
         return
 
     if participant_token in room["blocked_tokens"]:
+        # Still rejected — being blocked never grants entry on its own,
+        # per spec section 15 the moderator gets a notice (rate-limited,
+        # not on every retry) rather than the attempt being silent.
+        last_notified = room["blocked_retry_notified_at"].get(participant_token, 0)
+        if time.time() - last_notified > BLOCKED_RETRY_NOTIFY_COOLDOWN:
+            room["blocked_retry_notified_at"][participant_token] = time.time()
+            for sid, info in room["participants"].items():
+                if _can_moderate(info):
+                    emit("blocked-retry-notice", {"name": name}, to=sid)
         emit("join-rejected", {"reason": "blocked"})
         return
 
@@ -412,6 +426,7 @@ def _admit_participant(room, space_id, sid, name, role, participant_token, host_
         "role": role,
         "spotlighted": False,
         "screen_sharing": False,
+        "avatar": None,  # data URL, set via update-avatar; None = show initials
     }
 
     join_room(space_id)
@@ -505,6 +520,43 @@ def handle_media_state(data):
     emit("participant-updated", {"id": request.sid, **info}, to=space_id, include_self=False)
 
 
+@socketio.on("rename-self")
+def handle_rename_self(data):
+    """Display-name change only — never a security identity (see
+    participant_token, which never changes on rename), so a renamed
+    participant is still recognized correctly by the block-list."""
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room:
+        return
+    new_name = (data.get("name") or "").strip()[:40]
+    if not new_name:
+        return
+    room["participants"][request.sid]["name"] = new_name
+    emit("participant-updated", {"id": request.sid, **room["participants"][request.sid]}, to=space_id)
+
+
+MAX_AVATAR_BYTES = 300_000  # ~300KB — generous for a small profile image, cheap to hold in memory
+
+
+@socketio.on("update-avatar")
+def handle_update_avatar(data):
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room:
+        return
+    avatar = data.get("avatar")
+    if avatar is None:
+        room["participants"][request.sid]["avatar"] = None
+    else:
+        if not isinstance(avatar, str) or not avatar.startswith("data:image/"):
+            emit("avatar-rejected", {"reason": "invalid-format"})
+            return
+        if len(avatar) > MAX_AVATAR_BYTES:
+            emit("avatar-rejected", {"reason": "too-large"})
+            return
+        room["participants"][request.sid]["avatar"] = avatar
+    emit("participant-updated", {"id": request.sid, **room["participants"][request.sid]}, to=space_id)
+
+
 @socketio.on("raise-hand")
 def handle_raise_hand(data):
     space_id, room = _find_room_for_sid(request.sid)
@@ -585,6 +637,71 @@ def handle_host_mute(data):
         emit("participant-updated", {"id": target_sid, **room["participants"][target_sid]}, to=space_id)
 
 
+@socketio.on("mute-everyone")
+def handle_mute_everyone(data):
+    """Mutes every participant except the requester — a host/co-host
+    muting the room does not accidentally mute themself."""
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room or not _can_moderate(room["participants"][request.sid]):
+        return
+    for sid, info in room["participants"].items():
+        if sid == request.sid:
+            continue
+        info["mic"] = False
+        emit("forced-mute", {}, to=sid)
+        emit("participant-updated", {"id": sid, **info}, to=space_id)
+
+
+@socketio.on("ask-to-unmute")
+def handle_ask_to_unmute(data):
+    """Requests, never forces — the participant decides whether to
+    actually turn their microphone back on."""
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room or not _can_moderate(room["participants"][request.sid]):
+        return
+    target_sid = data.get("targetId")
+    if target_sid in room["participants"]:
+        emit("unmute-requested", {
+            "byName": room["participants"][request.sid]["name"],
+        }, to=target_sid)
+
+
+@socketio.on("request-co-host")
+def handle_request_co_host(data):
+    """A participant asks to become co-host. Notifies host/co-hosts with
+    a real accept/reject action — the server enforces the resulting role
+    change, not the client."""
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room:
+        return
+    requester = room["participants"][request.sid]
+    if requester["role"] != ROLE_PARTICIPANT:
+        return  # already host/co-host — nothing to request
+    for sid, info in room["participants"].items():
+        if _can_moderate(info):
+            emit("co-host-requested", {
+                "sid": request.sid,
+                "name": requester["name"],
+            }, to=sid)
+
+
+@socketio.on("respond-co-host-request")
+def handle_respond_co_host_request(data):
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room or not _can_moderate(room["participants"][request.sid]):
+        return
+    target_sid = data.get("targetId")
+    approve = bool(data.get("approve"))
+    if target_sid not in room["participants"]:
+        return
+    if approve and room["participants"][target_sid]["role"] == ROLE_PARTICIPANT:
+        room["participants"][target_sid]["role"] = ROLE_COHOST
+        emit("participant-updated", {"id": target_sid, **room["participants"][target_sid]}, to=space_id)
+        emit("role-changed", {"role": ROLE_COHOST}, to=target_sid)
+    else:
+        emit("co-host-request-declined", {}, to=target_sid)
+
+
 @socketio.on("make-co-host")
 def handle_make_co_host(data):
     """A verified host OR co-host may promote a participant to co-host —
@@ -647,11 +764,44 @@ def handle_host_remove(data):
     block = bool(data.get("block"))
     if target_sid in room["participants"]:
         if block:
-            room["blocked_tokens"].add(room["participants"][target_sid]["participant_token"])
+            token = room["participants"][target_sid]["participant_token"]
+            room["blocked_tokens"].add(token)
+            room["blocked_names"][token] = room["participants"][target_sid]["name"]
         emit("removed-from-space", {"blocked": block}, to=target_sid)
         del room["participants"][target_sid]
         leave_room(space_id, sid=target_sid)
         emit("participant-left", {"id": target_sid}, to=space_id)
+        emit("blocked-list-updated", _blocked_list(room), to=space_id)
+
+
+@socketio.on("allow-rejoin")
+def handle_allow_rejoin(data):
+    """Reverses a prior Block — the given participant_token may attempt
+    to join again. Requires the actual token, not a display name, since
+    a blocked person's name means nothing to the server's identity model."""
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room or not _can_moderate(room["participants"][request.sid]):
+        return
+    token = (data.get("participantToken") or "").strip()
+    room["blocked_tokens"].discard(token)
+    room["blocked_retry_notified_at"].pop(token, None)
+    room["blocked_names"].pop(token, None)
+    emit("blocked-list-updated", _blocked_list(room), to=space_id)
+
+
+@socketio.on("get-blocked-list")
+def handle_get_blocked_list(data):
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room or not _can_moderate(room["participants"][request.sid]):
+        return
+    emit("blocked-list-updated", _blocked_list(room))
+
+
+def _blocked_list(room):
+    return {"blocked": [
+        {"participantToken": t, "name": room["blocked_names"].get(t, "Unknown")}
+        for t in room["blocked_tokens"]
+    ]}
 
 
 @socketio.on("end-meeting")

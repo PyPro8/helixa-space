@@ -88,15 +88,106 @@
   </div>
 
   <div class="more-menu" id="moreMenu">
+    <button id="settingsMenuBtn" data-icon="settings">Settings</button>
     <button id="shareMenuBtn" class="dock-optional-in-menu" data-icon="monitor">Share screen</button>
     <button id="handMenuBtn" class="dock-optional-in-menu" data-icon="hand">Raise hand</button>
+    <button id="requestCoHostBtn" data-icon="user-check" style="display:none;">Request co-host</button>
     <button id="reactMenuBtn" data-icon="smile">Reactions</button>
     <button id="fullscreenMenuBtn" data-icon="maximize">Fullscreen</button>
     <button id="qrMenuBtn" data-icon="qr-code">Show join QR</button>
+    <button id="muteEveryoneBtn" data-icon="mic-off" style="display:none;">Mute everyone</button>
     <button id="admissionModeBtn" data-icon="user-check" style="display:none;">
       Admin Admission <span id="admissionModeToggle" style="margin-left:auto; font-weight:700; color:var(--text-2);">OFF</span>
     </button>
+    <button id="blockedListBtn" data-icon="lock" style="display:none;">Blocked participants</button>
     <button id="endMeetingMenuBtn" data-icon="phone-off" style="display:none; color:var(--danger);">End Meeting</button>
+  </div>
+</div>
+
+<div class="settings-modal-backdrop" id="settingsModalBackdrop">
+  <div class="settings-modal">
+    <div class="side-panel-head" style="border:none; padding:0 0 14px;">
+      <h3>Settings</h3>
+      <button class="panel-close" id="settingsCloseBtn" data-icon="x"></button>
+    </div>
+
+    <div class="settings-tabs">
+      <button class="settings-tab active" data-tab="identity">Identity</button>
+      <button class="settings-tab" data-tab="audio">Audio</button>
+      <button class="settings-tab" data-tab="video">Video</button>
+      <button class="settings-tab" data-tab="appearance">Appearance</button>
+    </div>
+
+    <div class="settings-panel active" data-panel="identity">
+      <div class="field">
+        <label for="settingsDisplayName">Display name</label>
+        <input type="text" id="settingsDisplayName" maxlength="40">
+      </div>
+      <div class="field">
+        <label>Avatar</label>
+        <div class="avatar-edit-row">
+          <div class="avatar-preview" id="avatarPreview">?</div>
+          <div style="display:flex; flex-direction:column; gap:8px;">
+            <label class="btn btn-ghost btn-sm" for="avatarFileInput" style="cursor:pointer;">Upload image</label>
+            <input type="file" id="avatarFileInput" accept="image/*" style="display:none;">
+            <button type="button" class="btn btn-ghost btn-sm" id="avatarClearBtn">Use initials</button>
+          </div>
+        </div>
+      </div>
+      <button type="button" class="btn btn-primary" id="settingsSaveIdentityBtn">Save</button>
+    </div>
+
+    <div class="settings-panel" data-panel="audio">
+      <div class="field">
+        <label for="micSelect">Microphone</label>
+        <select id="micSelect"></select>
+      </div>
+      <div class="field">
+        <label for="speakerSelect">Speaker <span style="font-weight:400; color:var(--text-2);">(where supported)</span></label>
+        <select id="speakerSelect"></select>
+      </div>
+      <div class="field">
+        <label for="micSensitivity">Microphone sensitivity</label>
+        <input type="range" id="micSensitivity" min="0" max="100" value="60">
+      </div>
+      <div class="field">
+        <label>Input level</label>
+        <div class="level-meter"><div class="level-meter-fill" id="levelMeterFill"></div></div>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="audioTestBtn">Test microphone</button>
+    </div>
+
+    <div class="settings-panel" data-panel="video">
+      <div class="field">
+        <label for="camSelect">Camera</label>
+        <select id="camSelect"></select>
+      </div>
+      <div class="settings-cam-preview">
+        <video id="settingsCamPreview" autoplay muted playsinline></video>
+      </div>
+    </div>
+
+    <div class="settings-panel" data-panel="appearance">
+      <div class="field">
+        <label>Theme</label>
+        <div class="mode-select">
+          <div class="mode-option" id="settingsThemeDark">🌙 Dark</div>
+          <div class="mode-option" id="settingsThemeLight">☀️ Light</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="blocked-modal-backdrop" id="blockedModalBackdrop">
+  <div class="blocked-modal">
+    <div class="side-panel-head" style="border:none; padding:0 0 14px;">
+      <h3>Blocked participants</h3>
+      <button class="panel-close" id="blockedCloseBtn" data-icon="x"></button>
+    </div>
+    <div id="blockedListBody">
+      <p style="font-size:13px; color:var(--text-2);">No one is currently blocked.</p>
+    </div>
   </div>
 </div>
 

@@ -23,10 +23,11 @@
 
   const pendingSpace = JSON.parse(sessionStorage.getItem('hx-pending-space') || 'null');
   const pendingJoin = JSON.parse(sessionStorage.getItem('hx-pending-join') || 'null');
-  const myName =
+  let myName =
     (pendingSpace && pendingSpace.spaceId === spaceId && pendingSpace.name) ||
     (pendingJoin && pendingJoin.name) ||
     'Guest';
+  let myAvatar = null; // data URL once set via Settings; null = show initials
   const myPassword =
     (pendingSpace && pendingSpace.spaceId === spaceId && pendingSpace.password) ||
     (pendingJoin && pendingJoin.password) ||
@@ -238,6 +239,9 @@
     if (!tile) return;
     const badge = tile.querySelector('.tile-sharing-badge');
     if (badge) badge.style.display = sharing ? 'flex' : 'none';
+    // Screen content must show its full frame (letterboxed if needed),
+    // never cropped like a camera tile — spec section 37.
+    tile.classList.toggle('tile-is-sharing', !!sharing);
   }
 
   function escapeHtml(str) {
@@ -266,6 +270,15 @@
     }
     video.style.display = hasVideo ? 'block' : 'none';
     avatar.style.display = hasVideo ? 'none' : 'flex';
+  }
+
+  function updateTileAvatar(id, name, avatarUrl) {
+    const tile = document.getElementById(tileId(id));
+    if (!tile) return;
+    const avatarEl = tile.querySelector('.tile-avatar');
+    avatarEl.innerHTML = avatarUrl
+      ? `<img src="${avatarUrl}" alt="">`
+      : escapeHtml(initials(name));
   }
 
   // v0.6: explicit "Tap to enable audio" banner for blocked autoplay,
@@ -763,14 +776,19 @@
   socket.on('participant-updated', (info) => {
     const entry = state.peers[info.id];
     if (entry) {
+      entry.name = info.name;
       entry.mic = info.mic;
       entry.cam = info.cam;
       entry.hand_raised = info.hand_raised;
       entry.role = info.role;
       entry.screen_sharing = info.screen_sharing;
+      entry.avatar = info.avatar;
     }
     updateTileMicIcon(info.id, info.mic);
     updateTileSharingBadge(info.id, info.screen_sharing);
+    updateTileAvatar(info.id, info.name, info.avatar);
+    const nameEl = document.querySelector(`#${tileId(info.id)} .tile-name`);
+    if (nameEl) nameEl.textContent = info.name;
     updateParticipantsPanel();
   });
 
@@ -803,7 +821,12 @@
   });
 
   socket.on('spotlight-changed', ({ targetId }) => {
-    state.spotlightId = targetId;
+    // The server always sends a real socket id, but locally our own
+    // tile is keyed 'local' (see createTile/renderLocalTile) — without
+    // this translation, a client spotlighting themself never matches
+    // their own tile in renderLayout(), and the spotlighted person can't
+    // see themself in the spotlight even though everyone else can.
+    state.spotlightId = targetId === state.myId ? 'local' : targetId;
     renderLayout();
   });
 
@@ -988,10 +1011,10 @@
     participantsList.innerHTML = '';
 
     // Local participant row
-    participantsList.appendChild(buildParticipantRow('local', myName, state.micOn, state.camOn, state.handRaised, state.role, true));
+    participantsList.appendChild(buildParticipantRow('local', myName, state.micOn, state.camOn, state.handRaised, state.role, true, myAvatar));
 
     Object.entries(state.peers).forEach(([id, info]) => {
-      participantsList.appendChild(buildParticipantRow(id, info.name, info.mic, info.cam, info.hand_raised, info.role || 'participant', false));
+      participantsList.appendChild(buildParticipantRow(id, info.name, info.mic, info.cam, info.hand_raised, info.role || 'participant', false, info.avatar));
     });
 
     renderLayout(); // re-check solo-tile sizing whenever the roster changes; also refreshes the View Host button
@@ -1004,13 +1027,16 @@
     return '';
   }
 
-  function buildParticipantRow(id, name, mic, cam, handRaised, role, isLocal) {
+  function buildParticipantRow(id, name, mic, cam, handRaised, role, isLocal, avatar) {
     const row = document.createElement('div');
     row.className = 'participant-row';
-    const showMenu = canModerate() && !isLocal;
+    // A host/co-host can always spotlight themself (that's a legitimate,
+    // common action — "put me on the main stage while presenting").
+    // Every other moderation action never applies to your own row.
+    const showMenu = canModerate();
     row.innerHTML = `
       <div class="participant-info">
-        <div class="participant-avatar-sm">${initials(name)}</div>
+        <div class="participant-avatar-sm">${avatar ? `<img src="${avatar}" alt="">` : escapeHtml(initials(name))}</div>
         <span class="participant-name">${escapeHtml(name)}${isLocal ? ' (You)' : ''}</span>
         ${roleBadge(role)}
       </div>
@@ -1024,7 +1050,7 @@
     if (showMenu) {
       row.querySelector('[data-menu]').addEventListener('click', (e) => {
         e.stopPropagation();
-        openParticipantActionMenu(e.currentTarget, id, name, role);
+        openParticipantActionMenu(e.currentTarget, id, name, role, isLocal);
       });
     }
     return row;
@@ -1042,24 +1068,27 @@
     }
   }
 
-  function openParticipantActionMenu(anchorEl, targetId, targetName, targetRole) {
+  function openParticipantActionMenu(anchorEl, targetId, targetName, targetRole, isLocal) {
     closeActionMenu();
 
     const actions = [];
+    // Spotlight is the one action that legitimately targets yourself.
     actions.push({
       key: 'spotlight',
       label: state.spotlightId === targetId ? 'Remove spotlight' : 'Spotlight',
       icon: 'star',
     });
-    actions.push({ key: 'mute', label: 'Mute', icon: 'mic-off' });
-    if (isHost() && targetRole === 'participant') {
-      actions.push({ key: 'make-co-host', label: 'Make co-host', icon: 'users' });
-    }
-    if (isHost() && targetRole === 'co-host') {
-      actions.push({ key: 'revoke-co-host', label: 'Remove co-host', icon: 'users' });
-    }
-    if (isHost()) {
-      actions.push({ key: 'remove', label: 'Remove participant', icon: 'x', danger: true });
+    if (!isLocal) {
+      actions.push({ key: 'mute', label: 'Mute', icon: 'mic-off' });
+      if (isHost() && targetRole === 'participant') {
+        actions.push({ key: 'make-co-host', label: 'Make co-host', icon: 'users' });
+      }
+      if (isHost() && targetRole === 'co-host') {
+        actions.push({ key: 'revoke-co-host', label: 'Remove co-host', icon: 'users' });
+      }
+      if (isHost()) {
+        actions.push({ key: 'remove', label: 'Remove participant', icon: 'x', danger: true });
+      }
     }
 
     const menu = document.createElement('div');
@@ -1074,13 +1103,17 @@
     menu.style.left = `${Math.max(8, rect.right - menu.offsetWidth - 140)}px`;
     openActionMenuEl = menu;
 
+    // The server only knows real socket ids — never the 'local' key we
+    // use internally for our own tile — so translate before every emit.
+    const serverTargetId = isLocal ? state.myId : targetId;
+
     menu.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-action]');
       if (!btn) return;
       const action = btn.dataset.action;
       if (action === 'spotlight') {
-        const newTarget = state.spotlightId === targetId ? null : targetId;
-        socket.emit('spotlight-participant', { targetId: newTarget });
+        const clearing = state.spotlightId === targetId;
+        socket.emit('spotlight-participant', { targetId: clearing ? null : serverTargetId });
       } else if (action === 'mute') {
         socket.emit('host-mute-participant', { targetId });
       } else if (action === 'make-co-host') {
@@ -1256,15 +1289,105 @@
   const endMeetingBackdrop = document.getElementById('endMeetingModalBackdrop');
   const endMeetingCancelBtn = document.getElementById('endMeetingCancelBtn');
   const endMeetingConfirmBtn = document.getElementById('endMeetingConfirmBtn');
+  const muteEveryoneBtn = document.getElementById('muteEveryoneBtn');
+  const requestCoHostBtn = document.getElementById('requestCoHostBtn');
+  const blockedListBtn = document.getElementById('blockedListBtn');
 
   function updateModeratorMenuItems() {
     admissionModeBtn.style.display = canModerate() ? 'flex' : 'none';
     endMeetingMenuBtn.style.display = isHost() ? 'flex' : 'none';
+    muteEveryoneBtn.style.display = canModerate() ? 'flex' : 'none';
+    blockedListBtn.style.display = canModerate() ? 'flex' : 'none';
+    requestCoHostBtn.style.display = state.role === 'participant' ? 'flex' : 'none';
   }
 
   admissionModeBtn.addEventListener('click', () => {
     moreMenu.classList.remove('open');
     socket.emit('set-admission-mode', { enabled: !state.admissionMode });
+  });
+
+  muteEveryoneBtn.addEventListener('click', () => {
+    moreMenu.classList.remove('open');
+    if (window.confirm('Mute everyone in this Space?')) {
+      socket.emit('mute-everyone', {});
+    }
+  });
+
+  requestCoHostBtn.addEventListener('click', () => {
+    moreMenu.classList.remove('open');
+    socket.emit('request-co-host', {});
+    window.HX.toast('Co-host request sent');
+  });
+
+  socket.on('co-host-requested', ({ sid, name }) => {
+    const stack = ensureAdmissionStack();
+    const el = document.createElement('div');
+    el.className = 'admission-toast';
+    el.innerHTML = `
+      <div class="admission-toast-title">Co-host Request</div>
+      <div class="admission-toast-name">${escapeHtml(name)} wants to become a co-host.</div>
+      <div class="admission-toast-actions">
+        <button class="dismiss-btn">Reject</button>
+        <button class="admit-btn">Accept</button>
+      </div>
+    `;
+    el.querySelector('.dismiss-btn').addEventListener('click', () => {
+      socket.emit('respond-co-host-request', { targetId: sid, approve: false });
+      el.remove();
+    });
+    el.querySelector('.admit-btn').addEventListener('click', () => {
+      socket.emit('respond-co-host-request', { targetId: sid, approve: true });
+      el.remove();
+    });
+    stack.appendChild(el);
+  });
+
+  socket.on('co-host-request-declined', () => {
+    window.HX.toast('Your co-host request was declined');
+  });
+
+  socket.on('unmute-requested', ({ byName }) => {
+    const wantsTo = window.confirm(`${byName} asked you to unmute. Unmute now?`);
+    if (wantsTo) setMic(true);
+  });
+
+  socket.on('blocked-retry-notice', ({ name }) => {
+    window.HX.toast(`A removed participant (${name}) is attempting to rejoin`);
+  });
+
+  // Blocked-list management modal
+  const blockedBackdrop = document.getElementById('blockedModalBackdrop');
+  const blockedCloseBtn = document.getElementById('blockedCloseBtn');
+  const blockedListBody = document.getElementById('blockedListBody');
+
+  blockedListBtn.addEventListener('click', () => {
+    moreMenu.classList.remove('open');
+    socket.emit('get-blocked-list', {});
+    blockedBackdrop.classList.add('open');
+  });
+  blockedCloseBtn.addEventListener('click', () => blockedBackdrop.classList.remove('open'));
+  blockedBackdrop.addEventListener('click', (e) => {
+    if (e.target === blockedBackdrop) blockedBackdrop.classList.remove('open');
+  });
+
+  socket.on('blocked-list-updated', ({ blocked }) => {
+    if (!blocked.length) {
+      blockedListBody.innerHTML = '<p style="font-size:13px; color:var(--text-2);">No one is currently blocked.</p>';
+      return;
+    }
+    blockedListBody.innerHTML = blocked
+      .map((b) => `
+        <div class="blocked-row">
+          <span>${escapeHtml(b.name)}</span>
+          <button class="btn btn-ghost btn-sm" data-allow-token="${b.participantToken}">Allow rejoin</button>
+        </div>
+      `)
+      .join('');
+    blockedListBody.querySelectorAll('[data-allow-token]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        socket.emit('allow-rejoin', { participantToken: btn.dataset.allowToken });
+      });
+    });
   });
 
   endMeetingMenuBtn.addEventListener('click', () => {
@@ -1278,6 +1401,266 @@
   endMeetingConfirmBtn.addEventListener('click', () => {
     socket.emit('end-meeting', {});
     endMeetingBackdrop.classList.remove('open');
+  });
+
+  // -------------------------------------------------------------- settings
+
+  const settingsBackdrop = document.getElementById('settingsModalBackdrop');
+  const settingsCloseBtn = document.getElementById('settingsCloseBtn');
+  const settingsMenuBtn = document.getElementById('settingsMenuBtn');
+
+  document.querySelectorAll('.settings-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.settings-tab').forEach((t) => t.classList.remove('active'));
+      document.querySelectorAll('.settings-panel').forEach((p) => p.classList.remove('active'));
+      tab.classList.add('active');
+      document.querySelector(`.settings-panel[data-panel="${tab.dataset.tab}"]`).classList.add('active');
+    });
+  });
+
+  async function openSettings() {
+    document.getElementById('settingsDisplayName').value = myName;
+    const preview = document.getElementById('avatarPreview');
+    preview.innerHTML = myAvatar ? `<img src="${myAvatar}" alt="">` : escapeHtml(initials(myName));
+    settingsBackdrop.classList.add('open');
+    await populateDeviceLists();
+    startSettingsCamPreview();
+  }
+  function closeSettings() {
+    settingsBackdrop.classList.remove('open');
+    stopSettingsCamPreview();
+    stopAudioLevelMeter();
+  }
+
+  settingsMenuBtn.addEventListener('click', () => {
+    moreMenu.classList.remove('open');
+    openSettings();
+  });
+  settingsCloseBtn.addEventListener('click', closeSettings);
+  settingsBackdrop.addEventListener('click', (e) => {
+    if (e.target === settingsBackdrop) closeSettings();
+  });
+
+  // Identity — rename + avatar
+  const avatarFileInput = document.getElementById('avatarFileInput');
+  const avatarClearBtn = document.getElementById('avatarClearBtn');
+  let pendingAvatarDataUrl = undefined; // undefined = no change queued this session
+
+  avatarFileInput.addEventListener('change', () => {
+    const file = avatarFileInput.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      window.HX.toast('Please choose an image file.');
+      return;
+    }
+    if (file.size > 300_000) {
+      window.HX.toast('Image is too large — please choose one under 300KB.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      pendingAvatarDataUrl = reader.result;
+      document.getElementById('avatarPreview').innerHTML = `<img src="${reader.result}" alt="">`;
+    };
+    reader.readAsDataURL(file);
+  });
+
+  avatarClearBtn.addEventListener('click', () => {
+    pendingAvatarDataUrl = null;
+    document.getElementById('avatarPreview').innerHTML = escapeHtml(initials(myName));
+  });
+
+  document.getElementById('settingsSaveIdentityBtn').addEventListener('click', () => {
+    const newName = document.getElementById('settingsDisplayName').value.trim();
+    if (newName && newName !== myName) {
+      myName = newName;
+      socket.emit('rename-self', { name: newName });
+      const localNameEl = document.querySelector(`#${tileId('local')} .tile-name`);
+      if (localNameEl) localNameEl.textContent = `${newName} (You)`;
+      updateParticipantsPanel();
+    }
+    if (pendingAvatarDataUrl !== undefined) {
+      myAvatar = pendingAvatarDataUrl;
+      socket.emit('update-avatar', { avatar: myAvatar });
+      updateTileAvatar('local', myName, myAvatar);
+      pendingAvatarDataUrl = undefined;
+      updateParticipantsPanel();
+    }
+    window.HX.toast('Settings saved');
+    closeSettings();
+  });
+
+  socket.on('avatar-rejected', ({ reason }) => {
+    window.HX.toast(reason === 'too-large' ? 'Avatar image was too large.' : 'That avatar image could not be used.');
+  });
+
+  // Audio/video device selection
+  async function populateDeviceLists() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const micSelect = document.getElementById('micSelect');
+      const speakerSelect = document.getElementById('speakerSelect');
+      const camSelect = document.getElementById('camSelect');
+      micSelect.innerHTML = '';
+      speakerSelect.innerHTML = '';
+      camSelect.innerHTML = '';
+
+      devices.forEach((d) => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `${d.kind} (${d.deviceId.slice(0, 6)})`;
+        if (d.kind === 'audioinput') micSelect.appendChild(opt);
+        if (d.kind === 'audiooutput') speakerSelect.appendChild(opt.cloneNode(true));
+        if (d.kind === 'videoinput') camSelect.appendChild(opt.cloneNode(true));
+      });
+
+      if (!speakerSelect.options.length) {
+        const opt = document.createElement('option');
+        opt.textContent = 'Output selection not supported in this browser';
+        speakerSelect.appendChild(opt);
+        speakerSelect.disabled = true;
+      }
+    } catch (err) {
+      Diag.log('warn', `enumerateDevices failed: ${err.message}`);
+    }
+  }
+
+  document.getElementById('micSelect').addEventListener('change', async (e) => {
+    await switchAudioDevice(e.target.value);
+  });
+  document.getElementById('camSelect').addEventListener('change', async (e) => {
+    await switchVideoDevice(e.target.value);
+  });
+
+  async function switchAudioDevice(deviceId) {
+    if (!state.localStream) return;
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } });
+      const newTrack = newStream.getAudioTracks()[0];
+      const oldTrack = state.localStream.getAudioTracks()[0];
+      if (oldTrack) {
+        state.localStream.removeTrack(oldTrack);
+        oldTrack.stop();
+      }
+      state.localStream.addTrack(newTrack);
+      newTrack.enabled = state.micOn;
+      Object.values(state.peers).forEach(({ pc }) => {
+        if (!pc) return;
+        const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'audio');
+        if (sender) sender.replaceTrack(newTrack);
+      });
+      startAudioLevelMeter();
+      window.HX.toast('Microphone switched');
+    } catch (err) {
+      window.HX.toast('Could not switch microphone.');
+      Diag.log('error', `switchAudioDevice failed: ${err.message}`);
+    }
+  }
+
+  async function switchVideoDevice(deviceId) {
+    if (!state.localStream) return;
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: deviceId } } });
+      const newTrack = newStream.getVideoTracks()[0];
+      const oldTrack = state.localStream.getVideoTracks()[0];
+      if (oldTrack) {
+        state.localStream.removeTrack(oldTrack);
+        oldTrack.stop();
+      }
+      state.localStream.addTrack(newTrack);
+      newTrack.enabled = state.camOn;
+      Object.values(state.peers).forEach(({ pc }) => {
+        if (!pc) return;
+        const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+        if (sender) sender.replaceTrack(newTrack);
+      });
+      setTileStream('local', state.localStream, true);
+      startSettingsCamPreview();
+      window.HX.toast('Camera switched');
+    } catch (err) {
+      window.HX.toast('Could not switch camera.');
+      Diag.log('error', `switchVideoDevice failed: ${err.message}`);
+    }
+  }
+
+  function startSettingsCamPreview() {
+    const previewEl = document.getElementById('settingsCamPreview');
+    if (state.localStream && state.camOn) previewEl.srcObject = state.localStream;
+  }
+  function stopSettingsCamPreview() {
+    document.getElementById('settingsCamPreview').srcObject = null;
+  }
+
+  // Microphone sensitivity + input level meter + audio test.
+  // True hardware gain control isn't exposed by getUserMedia — what we
+  // can do reliably is a software-level threshold/gain applied via the
+  // Web Audio API, plus a real input-level readout so the sensitivity
+  // slider has an honest, visible effect instead of pretending to change
+  // hardware that JS can't actually touch.
+  let audioCtx = null;
+  let analyser = null;
+  let levelMeterRAF = null;
+  let sensitivityGain = 0.6;
+
+  document.getElementById('micSensitivity').addEventListener('input', (e) => {
+    sensitivityGain = Number(e.target.value) / 100;
+  });
+
+  function startAudioLevelMeter() {
+    stopAudioLevelMeter();
+    if (!state.localStream || !state.localStream.getAudioTracks().length) return;
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaStreamSource(state.localStream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      source.connect(analyser);
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      const fill = document.getElementById('levelMeterFill');
+
+      function tick() {
+        analyser.getByteFrequencyData(data);
+        const avg = data.reduce((a, b) => a + b, 0) / data.length;
+        const level = Math.min(100, (avg / 255) * 100 * (0.5 + sensitivityGain));
+        if (fill) fill.style.width = `${level}%`;
+        levelMeterRAF = requestAnimationFrame(tick);
+      }
+      tick();
+    } catch (err) {
+      Diag.log('warn', `Audio level meter unavailable: ${err.message}`);
+    }
+  }
+
+  function stopAudioLevelMeter() {
+    if (levelMeterRAF) cancelAnimationFrame(levelMeterRAF);
+    levelMeterRAF = null;
+    if (audioCtx) {
+      audioCtx.close().catch(() => {});
+      audioCtx = null;
+    }
+  }
+
+  document.getElementById('audioTestBtn').addEventListener('click', () => {
+    if (!state.localStream || !state.localStream.getAudioTracks().length) {
+      window.HX.toast('No microphone is active to test.');
+      return;
+    }
+    window.HX.toast('Speak now — watch the input level bar move.');
+    startAudioLevelMeter();
+  });
+
+  // Appearance — theme (reuses the existing global toggle, kept in sync)
+  document.getElementById('settingsThemeDark').addEventListener('click', () => {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    localStorage.setItem('hx-theme', 'dark');
+    const toggleBtn = document.getElementById('themeToggle');
+    if (window.HXIcon && toggleBtn) toggleBtn.innerHTML = HXIcon.svg('moon', { size: 17 });
+  });
+  document.getElementById('settingsThemeLight').addEventListener('click', () => {
+    document.documentElement.setAttribute('data-theme', 'light');
+    localStorage.setItem('hx-theme', 'light');
+    const toggleBtn = document.getElementById('themeToggle');
+    if (window.HXIcon && toggleBtn) toggleBtn.innerHTML = HXIcon.svg('sun', { size: 17 });
   });
 
   // ------------------------------------------------------------------ leave
