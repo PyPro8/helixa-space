@@ -108,18 +108,39 @@ HX.initDevicePreview = function () {
 
   async function startCamera() {
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640, max: 640 }, height: { ideal: 360, max: 360 }, frameRate: { ideal: 15, max: 20 }, resizeMode: 'crop-and-scale' },
-        audio: true
-      });
+      stream = new MediaStream();
+      try {
+        const both = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640, max: 640 }, height: { ideal: 360, max: 360 }, frameRate: { ideal: 15, max: 20 }, resizeMode: 'crop-and-scale' },
+          audio: true
+        });
+        both.getTracks().forEach((t) => stream.addTrack(t));
+      } catch (combinedErr) {
+        // Preview must remain usable if one device fails.
+        try {
+          const v = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 640, max: 640 }, height: { ideal: 360, max: 360 }, frameRate: { ideal: 15, max: 20 }, resizeMode: 'crop-and-scale' },
+            audio: false
+          });
+          v.getVideoTracks().forEach((t) => stream.addTrack(t));
+        } catch (_) {}
+        try {
+          const a = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          a.getAudioTracks().forEach((t) => stream.addTrack(t));
+        } catch (_) {}
+        if (!stream.getTracks().length) throw combinedErr;
+      }
       const previewVideoTrack = stream.getVideoTracks()[0];
       if (previewVideoTrack) previewVideoTrack.contentHint = 'motion';
       video.srcObject = stream;
-      video.style.display = 'block';
-      placeholder.style.display = 'none';
-      camOn = true;
-      camBtn.classList.remove('off');
-      paintPreviewIcon(camBtn, 'video');
+      video.style.display = previewVideoTrack ? 'block' : 'none';
+      placeholder.style.display = previewVideoTrack ? 'none' : 'flex';
+      camOn = !!previewVideoTrack;
+      camBtn.classList.toggle('off', !camOn);
+      paintPreviewIcon(camBtn, camOn ? 'video' : 'video-off');
+      micOn = !!stream.getAudioTracks().length;
+      micBtn.classList.toggle('off', !micOn);
+      paintPreviewIcon(micBtn, micOn ? 'mic' : 'mic-off');
       applyMicState();
     } catch (err) {
       let msg = 'Camera access was denied or unavailable.';

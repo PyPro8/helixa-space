@@ -10,7 +10,11 @@
 </head>
 <body>
 
-<div class="meeting-shell" id="meetingShell" data-space-id="{{ space_id }}">
+<div class="meeting-shell" id="meetingShell"
+     data-space-id="{{ space_id }}"
+     data-turn-url="{{ turn_url|default('') }}"
+     data-turn-username="{{ turn_username|default('') }}"
+     data-turn-credential="{{ turn_credential|default('') }}">
 
   <div class="meeting-topbar">
     <div class="meeting-topbar-left">
@@ -33,9 +37,19 @@
         <button id="stopShareBtn">Stop sharing</button>
       </div>
 
-      <button class="grid-back-btn" id="gridBackBtn" title="Back to grid" data-icon="grid" style="display:none;">
-        <span>Grid</span>
-      </button>
+      <div class="stage-view-controls">
+        <button class="grid-back-btn" id="gridBackBtn" title="Main view" data-icon="maximize" style="display:none;">
+          <span>Main</span>
+        </button>
+        <button class="grid-view-btn" id="gridViewBtn" title="Show all participants" data-icon="grid" style="display:none;">
+          <span>Grid</span>
+        </button>
+      </div>
+
+      <div class="self-view" id="selfView" aria-label="Your video">
+        <video id="selfViewVideo" autoplay muted playsinline></video>
+        <span>You</span>
+      </div>
 
       <div class="video-grid" id="videoGrid"></div>
 
@@ -205,6 +219,14 @@
         <div class="level-meter"><div class="level-meter-fill" id="levelMeterFill"></div></div>
       </div>
       <button type="button" class="btn btn-ghost btn-sm" id="audioTestBtn">Test microphone</button>
+      <div id="mediaPermissionStatus" class="media-permission-status">Checking camera and microphone access…</div>
+      <div class="media-quality-card">
+        <strong>Media quality</strong>
+        <span>Camera: 640×360 · 15 FPS target · 400 kbps ceiling</span>
+        <span>Screen share: 1280×720 · 8 FPS target · 700 kbps ceiling</span>
+        <span>Audio: 32 kbps ceiling</span>
+        <small id="mediaQualityLive">Measuring outbound WebRTC traffic…</small>
+      </div>
     </div>
 
     <div class="settings-panel" data-panel="video">

@@ -53,9 +53,16 @@
     localStorage.setItem(`hx-participant-token-${spaceId}`, myParticipantToken);
   }
 
-  const ICE_SERVERS = {
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-  };
+  const ICE_SERVERS = (() => {
+    const iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+    const turnUrl = shell.dataset.turnUrl;
+    const turnUsername = shell.dataset.turnUsername;
+    const turnCredential = shell.dataset.turnCredential;
+    if (turnUrl && turnUsername && turnCredential) {
+      iceServers.push({ urls: turnUrl, username: turnUsername, credential: turnCredential });
+    }
+    return { iceServers };
+  })();
 
   // Media quality policy: keep camera/video-call traffic practical while
   // preserving a clear 16:9 image. WebRTC's encoder performs the outbound
@@ -104,6 +111,64 @@
   }
 
   const configureVideoSender = (sender, kind = 'camera') => configureMediaSender(sender, kind);
+
+  // ---------------------------------------------------------------- media quality telemetry
+  // WebRTC does not 'upload a video file'. Camera/screen frames are encoded
+  // and transmitted continuously over each peer connection. Show the actual
+  // outbound bitrate/frames in Settings so the quality policy is visible and
+  // testable instead of being hidden in JavaScript.
+  let mediaStatsTimer = null;
+  let lastOutboundStats = new Map();
+
+  function formatBitrate(bps) {
+    if (!Number.isFinite(bps) || bps <= 0) return '—';
+    return bps >= 1000000 ? `${(bps / 1000000).toFixed(2)} Mbps` : `${Math.round(bps / 1000)} kbps`;
+  }
+
+  async function refreshMediaQualityStats() {
+    const out = { videoBps: 0, audioBps: 0, videoFps: 0, peers: 0 };
+    const now = performance.now();
+    for (const entry of Object.values(state.peers)) {
+      if (!entry.pc || entry.pc.connectionState === 'closed') continue;
+      out.peers++;
+      try {
+        const reports = await entry.pc.getStats();
+        reports.forEach((r) => {
+          if (r.type !== 'outbound-rtp') return;
+          const prev = lastOutboundStats.get(r.id);
+          if (prev) {
+            const dt = (now - prev.time) / 1000;
+            if (dt > 0) {
+              const bps = ((r.bytesSent - prev.bytesSent) * 8) / dt;
+              if (r.kind === 'video' || r.mediaType === 'video') {
+                out.videoBps += Math.max(0, bps);
+                out.videoFps = Math.max(out.videoFps, r.framesPerSecond || 0);
+              } else if (r.kind === 'audio' || r.mediaType === 'audio') {
+                out.audioBps += Math.max(0, bps);
+              }
+            }
+          }
+          lastOutboundStats.set(r.id, { bytesSent: r.bytesSent || 0, time: now });
+        });
+      } catch (_) {}
+    }
+    const qualityEl = document.getElementById('mediaQualityLive');
+    if (qualityEl) {
+      qualityEl.innerHTML = `Outbound video: <strong>${formatBitrate(out.videoBps)}</strong> · audio: <strong>${formatBitrate(out.audioBps)}</strong> · video FPS: <strong>${out.videoFps ? Math.round(out.videoFps) : '—'}</strong> · peers: <strong>${out.peers}</strong>`;
+    }
+  }
+
+  function startMediaQualityStats() {
+    if (mediaStatsTimer) clearInterval(mediaStatsTimer);
+    mediaStatsTimer = setInterval(refreshMediaQualityStats, 3000);
+    refreshMediaQualityStats();
+  }
+
+  function stopMediaQualityStats() {
+    if (mediaStatsTimer) clearInterval(mediaStatsTimer);
+    mediaStatsTimer = null;
+    lastOutboundStats.clear();
+  }
 
   function cameraCaptureConstraints(deviceId) {
     return {
@@ -476,14 +541,24 @@
     tile.querySelector('.tile-mic-off').style.display = micOn ? 'none' : 'flex';
   }
 
-  // Focus (personal, click-driven, not synced) takes visual priority over
-  // Spotlight (host-controlled, synced) on the viewer's own screen — the
-  // two are independent per spec: clicking a tile never affects anyone
-  // else's view, and it never overrides the host's spotlight for others.
+  // Normal state is GRID. A local click opens one participant in a personal
+  // main view. A host/co-host SPOTLIGHT is meeting-wide and always wins over
+  // a personal focus so every client sees the same spotlight target.
   function renderLayout() {
-    const mainId = state.focusId || state.spotlightId;
+    const mainId = state.spotlightId || state.focusId;
     videoGrid.classList.toggle('spotlighted', !!mainId);
-    gridBackBtn.style.display = mainId ? 'flex' : 'none';
+    gridBackBtn.style.display = state.focusId && !state.spotlightId ? 'flex' : 'none';
+    gridViewBtn.style.display = state.focusId && !state.spotlightId ? 'flex' : 'none';
+
+    // Zoom-style self preview: when the viewer is looking at another
+    // participant, keep a small local camera box visible without creating
+    // a second participant tile or second WebRTC stream.
+    const showSelfView = !!mainId && mainId !== 'local' && !state.spotlightId && !!state.localStream;
+    selfView.classList.toggle('visible', showSelfView);
+    if (showSelfView && selfViewVideo.srcObject !== state.localStream) {
+      selfViewVideo.srcObject = state.localStream;
+      selfViewVideo.play().catch(() => {});
+    }
 
     // Explicit solo-tile class as a fallback for browsers without
     // :has() support — the CSS rule handles it natively where available,
@@ -511,6 +586,7 @@
 
   function setFocus(id) {
     // Clicking the currently-focused tile again returns to grid.
+    if (state.spotlightId) return; // meeting-wide spotlight cannot be overridden locally
     state.focusId = state.focusId === id ? null : id;
     renderLayout();
   }
@@ -553,8 +629,19 @@
   });
 
   const gridBackBtn = document.getElementById('gridBackBtn');
+  const gridViewBtn = document.getElementById('gridViewBtn');
+  const selfView = document.getElementById('selfView');
+  const selfViewVideo = document.getElementById('selfViewVideo');
   gridBackBtn.addEventListener('click', () => {
     state.focusId = null;
+    renderLayout();
+  });
+  gridViewBtn.addEventListener('click', () => {
+    if (state.spotlightId) return;
+    state.focusId = null;
+    // Grid is a personal view; never clear a host spotlight. The button
+    // therefore returns the viewer to the meeting-wide spotlight when one
+    // exists, otherwise it shows everyone.
     renderLayout();
   });
 
@@ -563,58 +650,81 @@
   // -------------------------------------------------------------- media
 
   async function getLocalMedia() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia(cameraCaptureConstraints());
-      const videoTrack = stream.getVideoTracks()[0];
-      if (videoTrack) videoTrack.contentHint = 'motion';
-      state.localStream = stream;
-
-      const videoTracks = stream.getVideoTracks();
-      const audioTracks = stream.getAudioTracks();
-
-      Diag.set('localStream', 'OK');
-      Diag.set('camera', videoTracks.length && videoTracks[0].readyState === 'live' ? 'OK' : 'FAILED');
-      Diag.set('microphone', audioTracks.length && audioTracks[0].readyState === 'live' ? 'OK' : 'FAILED');
-      Diag.set('videoTracks', videoTracks.length);
-      Diag.set('audioTracks', audioTracks.length);
-
-      if (!videoTracks.length) {
-        window.HX.toast('No video track available — camera may not be sending video.');
-        Diag.log('warn', 'getUserMedia succeeded but returned 0 video tracks');
-      }
-      if (!audioTracks.length) {
-        window.HX.toast('No audio track available — microphone may not be sending audio.');
-        Diag.log('warn', 'getUserMedia succeeded but returned 0 audio tracks');
-      }
-      Diag.log('info', `Local media ready: ${videoTracks.length} video, ${audioTracks.length} audio track(s)`);
-
-      return stream;
-    } catch (err) {
-      let msg = 'Unable to access camera or microphone.';
-      if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
-        msg = 'Camera or microphone access requires HTTPS. Open this page over HTTPS (or localhost) on this device.';
-      } else if (err.name === 'NotAllowedError') {
-        msg = 'Camera or microphone permission was denied.';
-      } else if (err.name === 'NotFoundError') {
-        msg = 'No camera or microphone was detected on this device.';
-      } else if (err.name === 'NotReadableError') {
-        msg = 'Camera or microphone is already in use by another application.';
-      }
-      window.HX.toast(msg);
-      console.error('getUserMedia failed:', err);
-      Diag.set('localStream', 'FAILED');
-      Diag.set('camera', 'FAILED');
-      Diag.set('microphone', 'FAILED');
-      Diag.log('error', `getUserMedia failed: ${err.name || err.message}`);
-      state.camOn = false;
-      state.micOn = false;
-      return new MediaStream(); // empty stream — still lets signaling work
+    // Do not let one failed device kill the other. A camera permission or
+    // driver problem must NOT silently take the microphone down with it.
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      window.HX.toast('This browser cannot access camera/microphone. Use HTTPS in a supported browser.');
+      return new MediaStream();
     }
+
+    let stream = new MediaStream();
+    let videoOk = false;
+    let audioOk = false;
+
+    try {
+      stream = await navigator.mediaDevices.getUserMedia(cameraCaptureConstraints());
+      videoOk = stream.getVideoTracks().length > 0;
+      audioOk = stream.getAudioTracks().length > 0;
+    } catch (combinedErr) {
+      Diag.log('warn', `Combined camera+microphone request failed: ${combinedErr.name || combinedErr.message}; trying devices independently.`);
+
+      try {
+        const videoOnly = await navigator.mediaDevices.getUserMedia({ video: cameraCaptureConstraints().video, audio: false });
+        videoOnly.getVideoTracks().forEach((t) => stream.addTrack(t));
+        videoOk = true;
+      } catch (videoErr) {
+        Diag.log('error', `Camera request failed: ${videoErr.name || videoErr.message}`);
+      }
+
+      try {
+        const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        audioOnly.getAudioTracks().forEach((t) => stream.addTrack(t));
+        audioOk = true;
+      } catch (audioErr) {
+        Diag.log('error', `Microphone request failed: ${audioErr.name || audioErr.message}`);
+      }
+    }
+
+    const videoTrack = stream.getVideoTracks()[0];
+    if (videoTrack) videoTrack.contentHint = 'motion';
+    state.localStream = stream;
+
+    const videoTracks = stream.getVideoTracks();
+    const audioTracks = stream.getAudioTracks();
+    state.camOn = videoTracks.some((t) => t.readyState === 'live');
+    state.micOn = audioTracks.some((t) => t.readyState === 'live');
+
+    Diag.set('localStream', videoTracks.length || audioTracks.length ? 'OK' : 'FAILED');
+    Diag.set('camera', videoOk && videoTracks[0]?.readyState === 'live' ? 'OK' : 'FAILED');
+    Diag.set('microphone', audioOk && audioTracks[0]?.readyState === 'live' ? 'OK' : 'FAILED');
+    Diag.set('videoTracks', videoTracks.length);
+    Diag.set('audioTracks', audioTracks.length);
+
+    if (!videoTracks.length) {
+      window.HX.toast('Camera unavailable — microphone can still be used.');
+      Diag.log('warn', 'No video track available.');
+    }
+    if (!audioTracks.length) {
+      window.HX.toast('Microphone unavailable — camera can still be used.');
+      Diag.log('warn', 'No audio track available.');
+    }
+    if (!videoTracks.length && !audioTracks.length) {
+      const secure = location.protocol === 'https:' || location.hostname === 'localhost';
+      window.HX.toast(secure ? 'Camera and microphone could not be opened. Check browser permissions.' : 'Camera/microphone require HTTPS (or localhost).');
+    }
+
+    Diag.log('info', `Local media ready: ${videoTracks.length} video, ${audioTracks.length} audio track(s)`);
+    await populateDeviceLists();
+    startAudioLevelMeter();
+    startMediaQualityStats();
+    updateControlButtonStates();
+    return stream;
   }
 
   function renderLocalTile() {
     createTile('local', myName, true);
     setTileStream('local', state.localStream, true);
+    if (selfViewVideo && state.localStream) selfViewVideo.srcObject = state.localStream;
     updateControlButtonStates();
   }
 
@@ -948,6 +1058,7 @@
     state.myId = data.yourId;
     state.role = data.role;
     state.admissionMode = !!data.admissionMode;
+    updateModeratorMenuItems();
     state.presentationMode = data.presentationMode !== false;
     if (data.spaceName) {
       state.spaceName = data.spaceName;
@@ -1061,12 +1172,26 @@
     // their own tile in renderLayout(), and the spotlighted person can't
     // see themself in the spotlight even though everyone else can.
     state.spotlightId = targetId === state.myId ? 'local' : targetId;
+    // Meeting-wide spotlight always takes precedence over a personal focus.
+    // Keep the previous focus so Grid can restore it after spotlight ends.
     renderLayout();
   });
 
   socket.on('reaction', ({ name, emoji }) => {
     spawnReaction(emoji);
   });
+
+  function showFloatingChatNotice(name, text) {
+    const notice = document.createElement('div');
+    notice.className = 'floating-chat-notice';
+    notice.innerHTML = `<strong>${escapeHtml(name)}</strong><span>${escapeHtml(text)}</span>`;
+    document.body.appendChild(notice);
+    requestAnimationFrame(() => notice.classList.add('show'));
+    setTimeout(() => {
+      notice.classList.remove('show');
+      setTimeout(() => notice.remove(), 280);
+    }, 3600);
+  }
 
   socket.on('chat-message', (msg) => {
     const isMine = msg.from === state.myId;
@@ -1076,8 +1201,9 @@
       state.chatUnread++;
       chatBadge.textContent = state.chatUnread;
       chatBadge.style.display = 'flex';
-      const label = state.chatUnread === 1 ? '1 new message' : `${state.chatUnread} new messages`;
-      window.HX.toast(label);
+      const label = state.chatUnread === 1 ? `${msg.name}: ${msg.text}` : `${msg.name}: ${msg.text}`;
+      showFloatingChatNotice(msg.name, msg.text);
+      window.HX.toast(`${state.chatUnread} new message${state.chatUnread === 1 ? '' : 's'}`);
     }
   });
 
@@ -1277,6 +1403,29 @@
     if (panel === chatPanel) state.chatOpen = false;
   }
 
+  // Touch/swipe-to-close for the drawer panels. The close button remains,
+  // but mobile users can now physically drag the panel away like Zoom.
+  function enableSwipeToClose(panel) {
+    let startX = 0;
+    let startY = 0;
+    let tracking = false;
+    panel.addEventListener('touchstart', (e) => {
+      if (!panel.classList.contains('open') || !e.touches[0]) return;
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+      tracking = true;
+    }, { passive: true });
+    panel.addEventListener('touchend', (e) => {
+      if (!tracking || !e.changedTouches[0]) return;
+      tracking = false;
+      const dx = e.changedTouches[0].clientX - startX;
+      const dy = e.changedTouches[0].clientY - startY;
+      if (dx > 70 && Math.abs(dx) > Math.abs(dy) * 1.2) closePanel(panel);
+    }, { passive: true });
+  }
+  enableSwipeToClose(chatPanel);
+  enableSwipeToClose(participantsPanel);
+
   chatBtn.addEventListener('click', () => {
     if (chatPanel.classList.contains('open')) closePanel(chatPanel);
     else openPanel(chatPanel);
@@ -1404,7 +1553,7 @@
     // A host/co-host can always spotlight themself (that's a legitimate,
     // common action — "put me on the main stage while presenting").
     // Every other moderation action never applies to your own row.
-    const showMenu = canModerate();
+    const showMenu = canModerate() || isLocal;
     row.innerHTML = `
       <div class="participant-info">
         <div class="participant-avatar-sm">${avatar ? `<img src="${avatar}" alt="">` : escapeHtml(initials(name))}</div>
@@ -1450,6 +1599,9 @@
       label: state.spotlightId === targetId ? 'Remove spotlight' : 'Spotlight',
       icon: 'star',
     });
+    if (isLocal) {
+      actions.push({ key: 'rename', label: 'Rename myself', icon: 'edit' });
+    }
     if (!isLocal) {
       actions.push({ key: 'message', label: 'Message privately', icon: 'message-circle' });
       actions.push({ key: 'mute', label: 'Mute', icon: 'mic-off' });
@@ -1486,7 +1638,19 @@
       const btn = e.target.closest('button[data-action]');
       if (!btn) return;
       const action = btn.dataset.action;
-      if (action === 'spotlight') {
+      if (action === 'rename') {
+        const nextName = window.prompt('Choose your display name:', myName);
+        if (nextName !== null) {
+          const clean = nextName.trim().slice(0, 40);
+          if (clean) {
+            myName = clean;
+            socket.emit('rename-self', { name: clean });
+            const localNameEl = document.querySelector(`#${tileId('local')} .tile-name`);
+            if (localNameEl) localNameEl.textContent = `${clean} (You)`;
+            updateParticipantsPanel();
+          }
+        }
+      } else if (action === 'spotlight') {
         const clearing = state.spotlightId === targetId;
         socket.emit('spotlight-participant', { targetId: clearing ? null : serverTargetId });
       } else if (action === 'message') {
@@ -1521,9 +1685,14 @@
   // ------------------------------------------------------------- screen share
 
   async function startScreenShare() {
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+      window.HX.toast('Screen sharing requires HTTPS.');
+      Diag.log('warn', 'Screen share blocked because the page is not HTTPS/localhost.');
+      return;
+    }
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-      window.HX.toast('Screen sharing is not supported in this browser.');
-      Diag.log('warn', 'getDisplayMedia unavailable — unsupported browser/device');
+      window.HX.toast('Screen sharing is not available in this mobile browser. Try a supported browser or desktop.');
+      Diag.log('warn', 'getDisplayMedia unavailable — Screen Capture API not exposed by this browser/device.');
       return;
     }
     try {
@@ -1557,15 +1726,14 @@
 
       screenTrack.onended = () => stopScreenShare();
     } catch (err) {
-      // NotAllowedError covers both "user clicked cancel" and "OS/browser
-      // denied permission" — the spec wants cancellation silent but real
-      // failures visible, and the DOMException gives no way to tell them
-      // apart, so we log to diagnostics either way and only toast for
-      // errors that are clearly not a simple cancel.
-      Diag.log('info', `Screen share not started: ${err.name || err.message}`);
-      if (err.name !== 'NotAllowedError') {
-        window.HX.toast('Could not start screen sharing.');
-      }
+      Diag.log('error', `Screen share failed: ${err.name || err.message}`);
+      const messages = {
+        NotAllowedError: 'Screen sharing permission was denied or is unavailable in this browser.',
+        InvalidStateError: 'Screen sharing must be started directly from the Share button.',
+        NotFoundError: 'No shareable screen/window was provided by the browser.',
+        NotReadableError: 'The selected screen could not be captured by the browser/OS.',
+      };
+      window.HX.toast(messages[err.name] || 'Could not start screen sharing.');
     }
   }
 
@@ -1916,6 +2084,15 @@
   async function populateDeviceLists() {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
+      const status = document.getElementById('mediaPermissionStatus');
+      if (status) {
+        const cams = devices.filter((d) => d.kind === 'videoinput');
+        const mics = devices.filter((d) => d.kind === 'audioinput');
+        const camLive = state.localStream && state.localStream.getVideoTracks().some((t) => t.readyState === 'live');
+        const micLive = state.localStream && state.localStream.getAudioTracks().some((t) => t.readyState === 'live');
+        status.className = `media-permission-status ${camLive && micLive ? 'ok' : 'warn'}`;
+        status.textContent = `Camera: ${camLive ? 'active' : cams.length ? 'available' : 'not detected'} · Microphone: ${micLive ? 'active' : mics.length ? 'available' : 'not detected'}`;
+      }
       const micSelect = document.getElementById('micSelect');
       const speakerSelect = document.getElementById('speakerSelect');
       const camSelect = document.getElementById('camSelect');
@@ -2073,13 +2250,25 @@
     }
   }
 
-  document.getElementById('audioTestBtn').addEventListener('click', () => {
-    if (!state.localStream || !state.localStream.getAudioTracks().length) {
-      window.HX.toast('No microphone is active to test.');
-      return;
+  document.getElementById('audioTestBtn').addEventListener('click', async () => {
+    try {
+      if (!state.localStream || !state.localStream.getAudioTracks().length) {
+        const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        audioOnly.getAudioTracks().forEach((t) => state.localStream.addTrack(t));
+        state.micOn = true;
+        Object.values(state.peers).forEach(({ pc }) => {
+          const sender = pc && pc.getSenders().find((snd) => snd.track && snd.track.kind === 'audio');
+          if (sender) sender.replaceTrack(state.localStream.getAudioTracks()[0]);
+        });
+        socket.emit('update-media-state', { mic: true });
+        await populateDeviceLists();
+      }
+      window.HX.toast('Speak now — the input meter should move.');
+      startAudioLevelMeter();
+    } catch (err) {
+      window.HX.toast(`Microphone test failed: ${err.name || 'permission/device error'}`);
+      Diag.log('error', `Microphone test failed: ${err.name || err.message}`);
     }
-    window.HX.toast('Speak now — watch the input level bar move.');
-    startAudioLevelMeter();
   });
 
   // Appearance — theme (reuses the existing global toggle, kept in sync)
