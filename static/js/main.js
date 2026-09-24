@@ -108,7 +108,12 @@ HX.initDevicePreview = function () {
 
   async function startCamera() {
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640, max: 640 }, height: { ideal: 360, max: 360 }, frameRate: { ideal: 15, max: 20 }, resizeMode: 'crop-and-scale' },
+        audio: true
+      });
+      const previewVideoTrack = stream.getVideoTracks()[0];
+      if (previewVideoTrack) previewVideoTrack.contentHint = 'motion';
       video.srcObject = stream;
       video.style.display = 'block';
       placeholder.style.display = 'none';

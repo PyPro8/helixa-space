@@ -37,6 +37,14 @@
       </div>
     </div>
 
+    <div class="details-row">
+      <div class="details-label">Meeting Link</div>
+      <div class="details-value-row">
+        <span class="details-value mono" id="detailLinkValue">—</span>
+        <button type="button" class="copy-btn" data-copy-target="detailLinkValue" data-copy-raw="true">Copy</button>
+      </div>
+    </div>
+
     <div class="details-row" id="detailPasswordRow" style="display:none;">
       <div class="details-label">Password</div>
       <div class="details-value-row">
@@ -72,7 +80,8 @@
       Not started yet — you'll start it when you proceed
     </div>
 
-    <button type="button" class="btn btn-primary" id="proceedBtn" style="width:100%; margin-top:8px;">Proceed to Space</button>
+    <button type="button" class="btn btn-ghost" id="shareDetailsBtn" style="width:100%;">Share Space details</button>
+    <button type="button" class="btn btn-primary" id="proceedBtn" style="width:100%;">Proceed to Space</button>
   </div>
 </div>
 

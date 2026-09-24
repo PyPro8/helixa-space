@@ -41,6 +41,9 @@
   // localStorage (namespaced per Space), never just in this page's
   // in-memory state or session storage.
   const myHostToken = localStorage.getItem(`hx-host-token-${spaceId}`) || '';
+  let waitingForHostStart = false;
+  let waitingPollTimer = null;
+  let joinAttemptInProgress = false;
   // Likewise, a stable participant identity is what makes the block-list
   // actually work across reconnects — generate one once per Space and
   // keep reusing it, rather than a fresh (unblockable) identity every time.
@@ -53,6 +56,67 @@
   const ICE_SERVERS = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
   };
+
+  // Media quality policy: keep camera/video-call traffic practical while
+  // preserving a clear 16:9 image. WebRTC's encoder performs the outbound
+  // resize/scale; we do not create an expensive canvas copy of the stream.
+  // These are ceilings, not guarantees — the browser may adapt lower when
+  // network/CPU conditions require it.
+  const MEDIA_QUALITY = {
+    // Data-efficient defaults. These are deliberately conservative for
+    // Nigerian/mobile data connections; the browser may adapt lower.
+    camera: {
+      width: { ideal: 640, max: 640 },
+      height: { ideal: 360, max: 360 },
+      frameRate: { ideal: 15, max: 20 },
+      maxBitrate: 400000,
+      audioBitrate: 32000,
+    },
+    screen: {
+      width: { ideal: 1280, max: 1280 },
+      height: { ideal: 720, max: 720 },
+      frameRate: { ideal: 8, max: 12 },
+      maxBitrate: 700000,
+      audioBitrate: 32000,
+    },
+  };
+
+  async function configureMediaSender(sender, kind = 'camera') {
+    if (!sender || !sender.track || !sender.setParameters) return;
+    const isVideo = sender.track.kind === 'video';
+    const q = MEDIA_QUALITY[kind] || MEDIA_QUALITY.camera;
+    try {
+      const params = sender.getParameters() || {};
+      params.encodings = params.encodings && params.encodings.length ? params.encodings : [{}];
+      params.encodings.forEach((encoding) => {
+        encoding.maxBitrate = isVideo ? q.maxBitrate : (q.audioBitrate || 32000);
+        if (isVideo) {
+          encoding.scaleResolutionDownBy = 1;
+          encoding.maxFramerate = q.frameRate.max;
+        }
+      });
+      if (isVideo) params.degradationPreference = kind === 'screen' ? 'maintain-resolution' : 'balanced';
+      await sender.setParameters(params);
+      Diag.log('info', `Configured ${kind} ${sender.track.kind}: <=${Math.round((isVideo ? q.maxBitrate : (q.audioBitrate || 32000)) / 1000)}kbps${isVideo ? `, <=${q.frameRate.max}fps` : ''}`);
+    } catch (err) {
+      Diag.log('warn', `Could not apply ${kind} ${sender.track.kind} limits: ${err.message}`);
+    }
+  }
+
+  const configureVideoSender = (sender, kind = 'camera') => configureMediaSender(sender, kind);
+
+  function cameraCaptureConstraints(deviceId) {
+    return {
+      video: {
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+        width: MEDIA_QUALITY.camera.width,
+        height: MEDIA_QUALITY.camera.height,
+        frameRate: MEDIA_QUALITY.camera.frameRate,
+        resizeMode: 'crop-and-scale',
+      },
+      audio: true,
+    };
+  }
 
   // ------------------------------------------------------------------ state
   const state = {
@@ -70,6 +134,7 @@
     chatUnread: 0,
     chatOpen: false,
     admissionMode: false,
+    presentationMode: true,
     spaceName: '',
   };
 
@@ -77,6 +142,15 @@
   function canModerate() { return state.role === 'host' || state.role === 'co-host'; }
 
   const socket = io();
+
+  // Direct-message state, declared early so every socket listener that
+  // references it (chat-message, direct-message) sees real initialized
+  // values regardless of where in the file those listeners are wired —
+  // no reliance on function-hoisting timing.
+  let activeDmId = null; // null = viewing group chat; otherwise a participant id
+  const dmThreads = {};  // id -> [{name, text, ts, mine}]
+  const dmUnread = {};   // id -> count, surfaced in the participant list
+  const groupChatHistory = []; // [{msg, isMine}], replayed when returning from a DM thread
 
   // -------------------------------------------------------- v0.6 diagnostics
   // Temporary debug panel per the v0.6 spec. Toggle with the keyboard
@@ -191,6 +265,21 @@
   const sharingBanner = document.getElementById('sharingBanner');
   const stopShareBtn = document.getElementById('stopShareBtn');
 
+  // Menu/control references must be initialized before any event handlers
+  // below are registered. Previously wbAccessBtn was declared much later
+  // in the file but used here first, triggering a Temporal Dead Zone
+  // ReferenceError and aborting the rest of meeting.js — which made the
+  // dock look clickable while none of its handlers actually existed.
+  const admissionModeBtn = document.getElementById('admissionModeBtn');
+  const presentationModeBtn = document.getElementById('presentationModeBtn');
+  const endMeetingMenuBtn = document.getElementById('endMeetingMenuBtn');
+  const endMeetingBackdrop = document.getElementById('endMeetingModalBackdrop');
+  const endMeetingCancelBtn = document.getElementById('endMeetingCancelBtn');
+  const endMeetingConfirmBtn = document.getElementById('endMeetingConfirmBtn');
+  const muteEveryoneBtn = document.getElementById('muteEveryoneBtn');
+  const requestCoHostBtn = document.getElementById('requestCoHostBtn');
+  const blockedListBtn = document.getElementById('blockedListBtn');
+  const wbAccessBtn = document.getElementById('wbAccessBtn');
   // -------------------------------------------------------------- icons
 
   function renderIcons() {
@@ -270,6 +359,12 @@
     }
     video.style.display = hasVideo ? 'block' : 'none';
     avatar.style.display = hasVideo ? 'none' : 'flex';
+
+    if (stream && stream.getAudioTracks().length) {
+      SpeakerDetection.track(id, stream);
+    } else {
+      SpeakerDetection.untrack(id);
+    }
   }
 
   function updateTileAvatar(id, name, avatarUrl) {
@@ -280,6 +375,84 @@
       ? `<img src="${avatarUrl}" alt="">`
       : escapeHtml(initials(name));
   }
+
+  // --------------------------------------------------- active speaker detection
+
+  // One shared AudioContext, one analyser per tracked participant stream.
+  // Real Web Audio analysis, not manual clicking — samples on a
+  // requestAnimationFrame loop and toggles .speaking on whichever tiles
+  // currently cross a volume threshold. Deliberately not per-frame
+  // flashy: uses a short hold time so the border doesn't flicker on
+  // every syllable gap.
+  const SpeakerDetection = (function () {
+    let audioCtx = null;
+    const analysers = {}; // id -> { analyser, data, lastAbove }
+    let rafId = null;
+    const THRESHOLD = 18; // 0-255 scale, tuned to ignore background noise
+    const HOLD_MS = 500;
+
+    function ensureCtx() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      return audioCtx;
+    }
+
+    function track(id, stream) {
+      untrack(id);
+      if (!stream || !stream.getAudioTracks().length) return;
+      try {
+        const ctx = ensureCtx();
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+        analysers[id] = { analyser, data: new Uint8Array(analyser.frequencyBinCount), lastAbove: 0 };
+        startLoop();
+      } catch (err) {
+        Diag.log('warn', `Speaker detection unavailable for ${id}: ${err.message}`);
+      }
+    }
+
+    function untrack(id) {
+      delete analysers[id];
+      const tile = document.getElementById(tileId(id));
+      if (tile) tile.classList.remove('speaking');
+    }
+
+    function startLoop() {
+      if (rafId) return;
+      const tick = () => {
+        const now = Date.now();
+        Object.entries(analysers).forEach(([id, entry]) => {
+          entry.analyser.getByteFrequencyData(entry.data);
+          const avg = entry.data.reduce((a, b) => a + b, 0) / entry.data.length;
+          const tile = document.getElementById(tileId(id));
+          if (!tile) return;
+          if (avg > THRESHOLD) {
+            entry.lastAbove = now;
+            tile.classList.add('speaking');
+          } else if (now - entry.lastAbove > HOLD_MS) {
+            tile.classList.remove('speaking');
+          }
+        });
+        rafId = requestAnimationFrame(tick);
+      };
+      rafId = requestAnimationFrame(tick);
+    }
+
+    function stopAll() {
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = null;
+      Object.keys(analysers).forEach(untrack);
+      if (audioCtx) {
+        audioCtx.close().catch(() => {});
+        audioCtx = null;
+      }
+    }
+
+    return { track, untrack, stopAll };
+  })();
 
   // v0.6: explicit "Tap to enable audio" banner for blocked autoplay,
   // per the mobile-autoplay requirement — never fail silently.
@@ -391,7 +564,9 @@
 
   async function getLocalMedia() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia(cameraCaptureConstraints());
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) videoTrack.contentHint = 'motion';
       state.localStream = stream;
 
       const videoTracks = stream.getVideoTracks();
@@ -458,8 +633,14 @@
         ? state.screenStream.getVideoTracks()[0]
         : state.localStream.getVideoTracks()[0];
 
-      if (videoTrack) pc.addTrack(videoTrack, state.localStream);
-      audioTracks.forEach((track) => pc.addTrack(track, state.localStream));
+      if (videoTrack) {
+        const sender = pc.addTrack(videoTrack, state.localStream);
+        configureVideoSender(sender, state.sharing ? 'screen' : 'camera');
+      }
+      audioTracks.forEach((track) => {
+        const sender = pc.addTrack(track, state.localStream);
+        configureMediaSender(sender, state.sharing ? 'screen' : 'camera');
+      });
       Diag.log('info', `Added local tracks to peer ${remoteId.slice(0, 6)} (video: ${state.sharing ? 'screen' : 'camera'})`);
     } else {
       Diag.log('warn', `No local tracks available when connecting to ${remoteId.slice(0, 6)} — this would create a data-only connection`);
@@ -541,9 +722,10 @@
   function removePeer(id) {
     const entry = state.peers[id];
     if (entry) {
-      entry.pc.close();
+      if (entry.pc) entry.pc.close();
       delete state.peers[id];
     }
+    SpeakerDetection.untrack(id);
     const tile = document.getElementById(tileId(id));
     if (tile) tile.remove();
     if (state.spotlightId === id) state.spotlightId = null;
@@ -553,7 +735,43 @@
 
   // ------------------------------------------------------------ signaling
 
+  function stopWaitingForHostStart() {
+    waitingForHostStart = false;
+    if (waitingPollTimer) {
+      clearInterval(waitingPollTimer);
+      waitingPollTimer = null;
+    }
+  }
+
+  function beginWaitingForHostStart(spaceName) {
+    waitingForHostStart = true;
+    showWaitingScreen(spaceName, 'not-started');
+    if (waitingPollTimer) clearInterval(waitingPollTimer);
+    // Socket.IO notification is the fast path. This REST check is the
+    // recovery path for mobile/browser sleep, missed events, reconnects,
+    // or a host starting while the waiting tab was backgrounded.
+    waitingPollTimer = setInterval(async () => {
+      if (!waitingForHostStart || joinAttemptInProgress) return;
+      try {
+        const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}`, { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.lifecycle === 'active') {
+          stopWaitingForHostStart();
+          attemptJoin();
+        } else if (data.lifecycle === 'ended') {
+          stopWaitingForHostStart();
+          showBlockingScreen('This Space has ended', 'The host has ended this meeting. It cannot be rejoined.');
+        }
+      } catch (err) {
+        // Keep waiting; the Socket.IO path can still deliver the start event.
+      }
+    }, 2500);
+  }
+
   function attemptJoin(extra) {
+    if (joinAttemptInProgress) return;
+    joinAttemptInProgress = true;
     socket.emit('join-space', {
       spaceId,
       name: myName,
@@ -568,6 +786,7 @@
   socket.on('connect', () => attemptJoin());
 
   socket.on('join-rejected', ({ reason, spaceName }) => {
+    joinAttemptInProgress = false;
     if (reason === 'wrong-password') {
       const entered = window.prompt('This Space is password-protected. Enter the password:');
       if (entered !== null) {
@@ -592,13 +811,21 @@
       return;
     }
     if (reason === 'not-started') {
-      showWaitingScreen(spaceName, 'not-started');
+      beginWaitingForHostStart(spaceName);
       return;
     }
   });
 
   socket.on('waiting-for-admission', ({ spaceName }) => {
     showWaitingScreen(spaceName, 'admission');
+  });
+
+  socket.on('space-started', () => {
+    // Fast path: the server explicitly tells every waiting socket that the
+    // lifecycle changed. The polling path above remains as recovery.
+    stopWaitingForHostStart();
+    window.HX.toast('The host started the meeting — joining…');
+    attemptJoin();
   });
 
   socket.on('admission-approved', () => {
@@ -715,10 +942,13 @@
   }
 
   socket.on('space-state', async (data) => {
+    joinAttemptInProgress = false;
+    stopWaitingForHostStart();
     hideBlockingOverlay();
     state.myId = data.yourId;
     state.role = data.role;
     state.admissionMode = !!data.admissionMode;
+    state.presentationMode = data.presentationMode !== false;
     if (data.spaceName) {
       state.spaceName = data.spaceName;
       const nameEl = document.getElementById('meetingSpaceName');
@@ -739,6 +969,8 @@
     if (data.idl) state.spaceIdl = data.idl;
     await getLocalMedia();
     renderLocalTile();
+
+    HXWhiteboard.init(socket, { isModerator: canModerate() });
 
     // Call everyone already in the room (skip ourselves defensively —
     // the server already excludes us, but never assume that blindly)
@@ -800,12 +1032,14 @@
 
   socket.on('you-are-host', () => {
     state.role = 'host';
+    HXWhiteboard.setModerator(true);
     window.HX.toast("You're now the host");
     updateParticipantsPanel();
   });
 
   socket.on('role-changed', ({ role }) => {
     state.role = role;
+    HXWhiteboard.setModerator(canModerate());
     window.HX.toast(role === 'co-host' ? "You're now a co-host" : 'Your role has changed');
     updateParticipantsPanel();
   });
@@ -835,8 +1069,10 @@
   });
 
   socket.on('chat-message', (msg) => {
-    appendChatMessage(msg, msg.from === state.myId);
-    if (!state.chatOpen && msg.from !== state.myId) {
+    const isMine = msg.from === state.myId;
+    groupChatHistory.push({ msg, isMine });
+    if (!activeDmId) appendChatMessage(msg, isMine);
+    if (!state.chatOpen && !isMine) {
       state.chatUnread++;
       chatBadge.textContent = state.chatUnread;
       chatBadge.style.display = 'flex';
@@ -910,38 +1146,124 @@
     moreMenu.classList.remove('open');
     toggleHand();
   });
+
+  function toggleWhiteboard() {
+    if (HXWhiteboard.isOpen()) HXWhiteboard.close();
+    else HXWhiteboard.open();
+  }
+  const whiteboardBtn = document.getElementById('whiteboardBtn');
+  const whiteboardMenuBtn = document.getElementById('whiteboardMenuBtn');
+  whiteboardBtn.addEventListener('click', toggleWhiteboard);
+  whiteboardMenuBtn.addEventListener('click', () => {
+    moreMenu.classList.remove('open');
+    toggleWhiteboard();
+  });
+
+  wbAccessBtn.addEventListener('click', () => {
+    moreMenu.classList.remove('open');
+    const nextAccess = document.getElementById('wbAccessToggle').textContent === 'Mods' ? 'everyone' : 'moderators';
+    socket.emit('set-whiteboard-access', { access: nextAccess });
+  });
+  socket.on('whiteboard-access-changed', ({ access }) => {
+    document.getElementById('wbAccessToggle').textContent = access === 'everyone' ? 'Everyone' : 'Mods';
+  });
+
   fullscreenMenuBtn.addEventListener('click', () => {
     moreMenu.classList.remove('open');
     toggleFullscreen();
   });
+
+  const controlBar = document.getElementById('controlBar');
+  const dockRestoreBtn = document.getElementById('dockRestoreBtn');
+  document.getElementById('hideDockMenuBtn').addEventListener('click', () => {
+    moreMenu.classList.remove('open');
+    controlBar.classList.add('dock-hidden');
+    dockRestoreBtn.style.display = 'flex';
+  });
+  dockRestoreBtn.addEventListener('click', () => {
+    controlBar.classList.remove('dock-hidden');
+    dockRestoreBtn.style.display = 'none';
+  });
+
+  // Rotate/orientation control. The Screen Orientation Lock API is real
+  // but inconsistently supported (Safari/iOS has none at all) and, where
+  // it exists, generally only works while in fullscreen — so this makes
+  // an honest attempt and tells the user plainly when it can't, rather
+  // than pretending every device supports forced rotation.
+  document.getElementById('rotateMenuBtn').addEventListener('click', async () => {
+    moreMenu.classList.remove('open');
+    const orientationApi = screen.orientation;
+    if (!orientationApi || !orientationApi.lock) {
+      window.HX.toast('This browser does not support locking screen orientation — try rotating your device instead.');
+      return;
+    }
+    try {
+      if (!document.fullscreenElement) {
+        await shell.requestFullscreen();
+      }
+      const isPortrait = orientationApi.type.startsWith('portrait');
+      await orientationApi.lock(isPortrait ? 'landscape' : 'portrait');
+      window.HX.toast('View rotated');
+    } catch (err) {
+      window.HX.toast('Could not rotate the view on this device — try rotating it manually.');
+      Diag.log('warn', `Orientation lock failed: ${err.message}`);
+    }
+  });
+
   qrMenuBtn.addEventListener('click', () => {
     moreMenu.classList.remove('open');
     openQrModal();
   });
 
   reactionsTray.addEventListener('click', (e) => {
-    const btn = e.target.closest('button[data-icon]');
+    const btn = e.target.closest('button[data-emoji]');
     if (!btn) return;
-    const iconName = btn.dataset.icon;
-    socket.emit('send-reaction', { emoji: iconName });
-    spawnReaction(iconName);
+    const emoji = btn.dataset.emoji;
+    socket.emit('send-reaction', { emoji });
+    spawnReaction(emoji);
     reactionsTray.classList.remove('open');
   });
 
-  function spawnReaction(iconName) {
+  function spawnReaction(emoji) {
     const el = document.createElement('div');
     el.className = 'reaction-float';
-    el.innerHTML = HXIcon.svg(iconName, { size: 28 });
+    el.textContent = emoji;
     el.style.left = 40 + Math.random() * 20 + '%';
     document.getElementById('stage').appendChild(el);
     setTimeout(() => el.remove(), 1800);
   }
 
+  // "+" custom emoji picker — leans on the OS/browser's own emoji
+  // keyboard rather than building a bespoke emoji library, per spec.
+  const emojiPickerPopup = document.getElementById('emojiPickerPopup');
+  const emojiPickerInput = document.getElementById('emojiPickerInput');
+
+  document.getElementById('reactionsAddBtn').addEventListener('click', () => {
+    reactionsTray.classList.remove('open');
+    emojiPickerInput.value = '';
+    emojiPickerPopup.classList.add('open');
+    emojiPickerInput.focus();
+  });
+  document.getElementById('emojiPickerCancelBtn').addEventListener('click', () => {
+    emojiPickerPopup.classList.remove('open');
+  });
+  document.getElementById('emojiPickerConfirmBtn').addEventListener('click', () => {
+    const value = emojiPickerInput.value.trim();
+    if (value) {
+      socket.emit('send-reaction', { emoji: value });
+      spawnReaction(value);
+    }
+    emojiPickerPopup.classList.remove('open');
+  });
+  emojiPickerInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('emojiPickerConfirmBtn').click();
+  });
+
   // ----------------------------------------------------------- panels
 
   function openPanel(panel) {
-    [chatPanel, participantsPanel].forEach((p) => (p.style.display = 'none'));
-    panel.style.display = 'flex';
+    [chatPanel, participantsPanel].forEach((p) => p.classList.remove('open'));
+    panel.classList.add('open');
     if (panel === chatPanel) {
       state.chatOpen = true;
       state.chatUnread = 0;
@@ -951,17 +1273,17 @@
   }
 
   function closePanel(panel) {
-    panel.style.display = 'none';
+    panel.classList.remove('open');
     if (panel === chatPanel) state.chatOpen = false;
   }
 
   chatBtn.addEventListener('click', () => {
-    if (chatPanel.style.display === 'flex') closePanel(chatPanel);
+    if (chatPanel.classList.contains('open')) closePanel(chatPanel);
     else openPanel(chatPanel);
   });
 
   participantsBtn.addEventListener('click', () => {
-    if (participantsPanel.style.display === 'flex') closePanel(participantsPanel);
+    if (participantsPanel.classList.contains('open')) closePanel(participantsPanel);
     else openPanel(participantsPanel);
   });
 
@@ -989,16 +1311,65 @@
 
   const chatInput = document.getElementById('chatInput');
   const chatSendBtn = document.getElementById('chatSendBtn');
+  const chatBackBtn = document.getElementById('chatBackBtn');
+  const chatPanelTitle = document.getElementById('chatPanelTitle');
+
+  function renderDmThread(id) {
+    chatMessages.innerHTML = '';
+    (dmThreads[id] || []).forEach((m) => appendChatMessage({ name: m.name, text: m.text, ts: m.ts }, m.mine));
+  }
+
+  function openDirectMessageThread(id, name) {
+    activeDmId = id;
+    dmUnread[id] = 0;
+    chatPanelTitle.textContent = `${name} (private)`;
+    chatBackBtn.style.display = 'flex';
+    chatInput.placeholder = `Message ${name} privately`;
+    renderDmThread(id);
+    openPanel(chatPanel);
+    updateParticipantsPanel();
+  }
+
+  function returnToGroupChat() {
+    activeDmId = null;
+    chatPanelTitle.textContent = 'Chat';
+    chatBackBtn.style.display = 'none';
+    chatInput.placeholder = 'Message everyone';
+    chatMessages.innerHTML = '';
+    groupChatHistory.forEach((m) => appendChatMessage(m.msg, m.isMine));
+  }
+  chatBackBtn.addEventListener('click', returnToGroupChat);
 
   function sendChat() {
     const text = chatInput.value.trim();
     if (!text) return;
-    socket.emit('send-chat', { text });
+    if (activeDmId) {
+      socket.emit('send-direct-message', { targetId: activeDmId, text });
+    } else {
+      socket.emit('send-chat', { text });
+    }
     chatInput.value = '';
   }
   chatSendBtn.addEventListener('click', sendChat);
   chatInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') sendChat();
+  });
+
+  socket.on('direct-message', (msg) => {
+    const otherId = msg.from === state.myId ? msg.to : msg.from;
+    const mine = msg.from === state.myId;
+    const entry = { name: mine ? myName : msg.fromName, text: msg.text, ts: msg.ts, mine };
+    if (!dmThreads[otherId]) dmThreads[otherId] = [];
+    dmThreads[otherId].push(entry);
+
+    if (activeDmId === otherId) {
+      appendChatMessage({ name: entry.name, text: entry.text, ts: entry.ts }, mine);
+    } else if (!mine) {
+      dmUnread[otherId] = (dmUnread[otherId] || 0) + 1;
+      const otherName = (state.peers[otherId] && state.peers[otherId].name) || msg.fromName;
+      window.HX.toast(`New private message from ${otherName}`);
+      updateParticipantsPanel();
+    }
   });
 
   // ------------------------------------------------------------ participants
@@ -1044,6 +1415,7 @@
         <span class="row-icon">${HXIcon.svg(mic ? 'mic' : 'mic-off', { size: 15 })}</span>
         <span class="row-icon">${HXIcon.svg(cam ? 'video' : 'video-off', { size: 15 })}</span>
         ${handRaised ? `<span class="row-icon" style="color:var(--warn);">${HXIcon.svg('hand', { size: 15 })}</span>` : ''}
+        ${!isLocal && dmUnread[id] ? `<span class="dm-unread-dot" title="${dmUnread[id]} new private message(s)"></span>` : ''}
         ${showMenu ? `<button class="participant-menu-btn" data-menu="${id}">${HXIcon.svg('more-vertical', { size: 15 })}</button>` : ''}
       </div>
     `;
@@ -1079,7 +1451,9 @@
       icon: 'star',
     });
     if (!isLocal) {
+      actions.push({ key: 'message', label: 'Message privately', icon: 'message-circle' });
       actions.push({ key: 'mute', label: 'Mute', icon: 'mic-off' });
+      actions.push({ key: 'ask-unmute', label: 'Ask to unmute', icon: 'mic' });
       if (isHost() && targetRole === 'participant') {
         actions.push({ key: 'make-co-host', label: 'Make co-host', icon: 'users' });
       }
@@ -1088,6 +1462,7 @@
       }
       if (isHost()) {
         actions.push({ key: 'remove', label: 'Remove participant', icon: 'x', danger: true });
+        actions.push({ key: 'remove-block', label: 'Remove & block rejoin', icon: 'lock', danger: true });
       }
     }
 
@@ -1114,15 +1489,23 @@
       if (action === 'spotlight') {
         const clearing = state.spotlightId === targetId;
         socket.emit('spotlight-participant', { targetId: clearing ? null : serverTargetId });
+      } else if (action === 'message') {
+        openDirectMessageThread(targetId, targetName);
       } else if (action === 'mute') {
         socket.emit('host-mute-participant', { targetId });
+      } else if (action === 'ask-unmute') {
+        socket.emit('ask-to-unmute', { targetId });
       } else if (action === 'make-co-host') {
         socket.emit('make-co-host', { targetId });
       } else if (action === 'revoke-co-host') {
         socket.emit('revoke-co-host', { targetId });
       } else if (action === 'remove') {
         if (window.confirm(`Remove ${targetName} from the Space?`)) {
-          socket.emit('host-remove-participant', { targetId });
+          socket.emit('host-remove-participant', { targetId, block: false });
+        }
+      } else if (action === 'remove-block') {
+        if (window.confirm(`Remove ${targetName} and block this participant from rejoining?`)) {
+          socket.emit('host-remove-participant', { targetId, block: true });
         }
       }
       closeActionMenu();
@@ -1144,14 +1527,25 @@
       return;
     }
     try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          width: MEDIA_QUALITY.screen.width,
+          height: MEDIA_QUALITY.screen.height,
+          frameRate: MEDIA_QUALITY.screen.frameRate,
+        },
+        audio: false,
+      });
       state.screenStream = screenStream;
       const screenTrack = screenStream.getVideoTracks()[0];
+      if (screenTrack) screenTrack.contentHint = 'detail';
 
       Object.values(state.peers).forEach(({ pc }) => {
         if (!pc) return;
         const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
-        if (sender) sender.replaceTrack(screenTrack);
+        if (sender) {
+          sender.replaceTrack(screenTrack);
+          configureVideoSender(sender, 'screen');
+        }
       });
 
       setTileStream('local', screenStream, true);
@@ -1184,7 +1578,10 @@
     Object.values(state.peers).forEach(({ pc }) => {
       if (!pc || !camTrack) return;
       const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
-      if (sender) sender.replaceTrack(camTrack);
+      if (sender) {
+        sender.replaceTrack(camTrack);
+        configureVideoSender(sender, 'camera');
+      }
     });
     setTileStream('local', state.camOn ? state.localStream : null, true);
     state.sharing = false;
@@ -1282,28 +1679,49 @@
     if (e.target === qrBackdrop) qrBackdrop.classList.remove('open');
   });
 
-  // -------------------------------------------------- admin admission / end meeting
+  document.getElementById('qrShareBtn').addEventListener('click', async () => {
+    const joinUrl = `${window.location.origin}/meeting/${spaceId}`;
+    const shareText = [
+      state.spaceName ? `Join "${state.spaceName}" on Helixa Space` : 'Join this Space on Helixa Space',
+      `Space ID: ${spaceId}`,
+      joinUrl,
+    ].join('\n');
 
-  const admissionModeBtn = document.getElementById('admissionModeBtn');
-  const endMeetingMenuBtn = document.getElementById('endMeetingMenuBtn');
-  const endMeetingBackdrop = document.getElementById('endMeetingModalBackdrop');
-  const endMeetingCancelBtn = document.getElementById('endMeetingCancelBtn');
-  const endMeetingConfirmBtn = document.getElementById('endMeetingConfirmBtn');
-  const muteEveryoneBtn = document.getElementById('muteEveryoneBtn');
-  const requestCoHostBtn = document.getElementById('requestCoHostBtn');
-  const blockedListBtn = document.getElementById('blockedListBtn');
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: state.spaceName || 'Helixa Space', text: shareText, url: joinUrl });
+      } catch (err) {
+        if (err.name !== 'AbortError') window.HX.toast('Could not open the share sheet.');
+      }
+    } else {
+      navigator.clipboard.writeText(shareText).then(() => window.HX.toast('Space details copied — paste to share'));
+    }
+  });
+
+  // -------------------------------------------------- admin admission / end meeting
 
   function updateModeratorMenuItems() {
     admissionModeBtn.style.display = canModerate() ? 'flex' : 'none';
+    presentationModeBtn.style.display = canModerate() ? 'flex' : 'none';
     endMeetingMenuBtn.style.display = isHost() ? 'flex' : 'none';
     muteEveryoneBtn.style.display = canModerate() ? 'flex' : 'none';
     blockedListBtn.style.display = canModerate() ? 'flex' : 'none';
+    wbAccessBtn.style.display = canModerate() ? 'flex' : 'none';
     requestCoHostBtn.style.display = state.role === 'participant' ? 'flex' : 'none';
   }
 
   admissionModeBtn.addEventListener('click', () => {
     moreMenu.classList.remove('open');
     socket.emit('set-admission-mode', { enabled: !state.admissionMode });
+  });
+
+  presentationModeBtn.addEventListener('click', () => {
+    moreMenu.classList.remove('open');
+    socket.emit('set-presentation-mode', { enabled: !state.presentationMode });
+  });
+  socket.on('presentation-mode-changed', ({ enabled }) => {
+    state.presentationMode = enabled;
+    document.getElementById('presentationModeToggle').textContent = enabled ? 'ON' : 'OFF';
   });
 
   muteEveryoneBtn.addEventListener('click', () => {
@@ -1547,7 +1965,10 @@
       Object.values(state.peers).forEach(({ pc }) => {
         if (!pc) return;
         const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'audio');
-        if (sender) sender.replaceTrack(newTrack);
+        if (sender) {
+          sender.replaceTrack(newTrack);
+          configureMediaSender(sender, state.sharing ? 'screen' : 'camera');
+        }
       });
       startAudioLevelMeter();
       window.HX.toast('Microphone switched');
@@ -1560,8 +1981,17 @@
   async function switchVideoDevice(deviceId) {
     if (!state.localStream) return;
     try {
-      const newStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: deviceId } } });
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          deviceId: { exact: deviceId },
+          width: MEDIA_QUALITY.camera.width,
+          height: MEDIA_QUALITY.camera.height,
+          frameRate: MEDIA_QUALITY.camera.frameRate,
+          resizeMode: 'crop-and-scale',
+        },
+      });
       const newTrack = newStream.getVideoTracks()[0];
+      if (newTrack) newTrack.contentHint = 'motion';
       const oldTrack = state.localStream.getVideoTracks()[0];
       if (oldTrack) {
         state.localStream.removeTrack(oldTrack);
@@ -1572,7 +2002,10 @@
       Object.values(state.peers).forEach(({ pc }) => {
         if (!pc) return;
         const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
-        if (sender) sender.replaceTrack(newTrack);
+        if (sender) {
+          sender.replaceTrack(newTrack);
+          configureVideoSender(sender, 'camera');
+        }
       });
       setTileStream('local', state.localStream, true);
       startSettingsCamPreview();
@@ -1666,6 +2099,7 @@
   // ------------------------------------------------------------------ leave
 
   leaveBtn.addEventListener('click', () => {
+    SpeakerDetection.stopAll();
     Object.values(state.peers).forEach(({ pc }) => pc && pc.close());
     if (state.localStream) state.localStream.getTracks().forEach((t) => t.stop());
     if (state.screenStream) state.screenStream.getTracks().forEach((t) => t.stop());

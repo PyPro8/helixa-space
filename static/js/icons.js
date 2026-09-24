@@ -64,5 +64,11 @@ const HXIcon = (function () {
     return `<svg${cls} width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
   }
 
-  return { svg: svg };
+  const api = { svg: svg };
+  // Expose the icon API on window as well as the global lexical binding.
+  // Shared pages use window.HXIcon for feature detection; without this,
+  // landing/create/join icon painting silently skipped while meeting.js
+  // (which calls HXIcon directly) still worked.
+  window.HXIcon = api;
+  return api;
 })();

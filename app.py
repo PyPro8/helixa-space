@@ -118,12 +118,22 @@ def _new_room(name, password=None, idl=None, co_host_key=None):
         "host_token": gen_secure_token(),
         "host_sid": None,
         "admission_mode": False,
+        "presentation_mode": True,  # auto-spotlight whoever is screen sharing
         "blocked_tokens": set(),
         "blocked_names": {},  # participant_token -> name at time of block, for the management UI
         "pending_admission": {},
+        "waiting_for_start": {},  # sid -> {name, participant_token, ...join data} — retried automatically once the host starts
         "blocked_retry_notified_at": {},  # participant_token -> last notify time, for rate limiting
         "created_at": time.time(),
         "participants": {},
+        # Whiteboard: an ordered list of committed objects (strokes, text,
+        # shapes) plus a redo stack. Synced as operations, never as full
+        # canvas snapshots — see whiteboard:* events below.
+        "whiteboard": {
+            "objects": [],   # list of {id, type, ...} dicts, append-only except via undo/clear
+            "undone": [],    # objects popped by undo, available to redo
+            "draw_access": "moderators",  # "moderators" | "everyone"
+        },
     }
 
 
@@ -381,11 +391,20 @@ def handle_join_space(data):
 
     # Space lifecycle: only a host or a co-host-key holder can move a
     # Space from "created" to "active". A plain participant arriving at
-    # an unstarted Space waits instead of silently entering.
+    # an unstarted Space waits — registered so we can automatically
+    # re-admit them the moment the host actually starts it, instead of
+    # leaving their client's spinner running with nothing ever following.
     if room["lifecycle"] == LIFECYCLE_CREATED:
         if role in (ROLE_HOST, ROLE_COHOST):
             room["lifecycle"] = LIFECYCLE_ACTIVE
+            _release_waiting_for_start(room, space_id)
         else:
+            room["waiting_for_start"][request.sid] = {
+                "name": name,
+                "participant_token": participant_token,
+                "host_token": host_token,
+                "co_host_key": supplied_co_host_key,
+            }
             emit("join-rejected", {
                 "reason": "not-started",
                 "spaceName": room["name"],
@@ -413,10 +432,45 @@ def handle_join_space(data):
                 }, to=sid)
         return
 
+    _evict_stale_session(room, space_id, participant_token, request.sid)
     _admit_participant(room, space_id, request.sid, name, role, participant_token, host_token)
 
 
+def _evict_stale_session(room, space_id, participant_token, new_sid):
+    """A refresh/reconnect arrives as a brand-new Socket.IO session id, so
+    without this check the same physical participant would end up with
+    two entries in room['participants'] for a window of time — the old
+    (now-dead) sid's tile never gets cleaned up until its disconnect
+    event finishes processing, which can race behind the new session's
+    join, producing a visible duplicate 'You'/ghost tile. Identify by
+    participant_token (stable across refreshes, unlike the sid) and
+    proactively remove any existing entry for it before admitting the
+    new session."""
+    stale_sid = next(
+        (sid for sid, info in room["participants"].items()
+         if info["participant_token"] == participant_token and sid != new_sid),
+        None,
+    )
+    if stale_sid:
+        del room["participants"][stale_sid]
+        leave_room(space_id, sid=stale_sid)
+        emit("participant-left", {"id": stale_sid}, to=space_id)
+
+
+def _release_waiting_for_start(room, space_id):
+    """Called the moment a Space actually goes ACTIVE. Every participant
+    who hit 'not-started' earlier is sitting on a client-side waiting
+    screen with no way to know the state changed on its own — this tells
+    each of them explicitly so the client can retry the join itself
+    (with the same credentials it already has), rather than leaving a
+    spinner running forever with nothing to end it."""
+    for sid in list(room["waiting_for_start"].keys()):
+        emit("space-started", {}, to=sid)
+    room["waiting_for_start"] = {}
+
+
 def _admit_participant(room, space_id, sid, name, role, participant_token, host_token):
+    room["waiting_for_start"].pop(sid, None)  # no longer relevant once actually admitted
     room["participants"][sid] = {
         "name": name,
         "participant_token": participant_token,
@@ -440,6 +494,7 @@ def _admit_participant(room, space_id, sid, name, role, participant_token, host_
         "locked": bool(room.get("password")),
         "idl": room.get("idl"),
         "admissionMode": room["admission_mode"],
+        "presentationMode": room["presentation_mode"],
         "isOriginalHost": role == ROLE_HOST and host_token == room.get("host_token"),
         "hostToken": room["host_token"] if role == ROLE_HOST else None,
         "participants": existing,
@@ -481,6 +536,15 @@ def handle_set_admission_mode(data):
         return
     room["admission_mode"] = bool(data.get("enabled"))
     emit("admission-mode-changed", {"enabled": room["admission_mode"]}, to=space_id)
+
+
+@socketio.on("set-presentation-mode")
+def handle_set_presentation_mode(data):
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room or not _can_moderate(room["participants"][request.sid]):
+        return
+    room["presentation_mode"] = bool(data.get("enabled"))
+    emit("presentation-mode-changed", {"enabled": room["presentation_mode"]}, to=space_id)
 
 
 @socketio.on("webrtc-offer")
@@ -605,6 +669,150 @@ def handle_chat(data):
     }, to=space_id)
 
 
+@socketio.on("send-direct-message")
+def handle_direct_message(data):
+    """Private chat between two participants. Delivered only to sender
+    and the named recipient — never broadcast to the room, and the
+    server (not the client) decides the actual recipient socket, so a
+    tampered client payload can't redirect a DM to someone else."""
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room:
+        return
+    target_sid = data.get("targetId")
+    if target_sid not in room["participants"]:
+        return
+    text = (data.get("text") or "").strip()[:2000]
+    if not text:
+        return
+    sender = room["participants"][request.sid]
+    payload = {
+        "from": request.sid,
+        "to": target_sid,
+        "fromName": sender["name"],
+        "text": text,
+        "ts": time.time(),
+    }
+    emit("direct-message", payload, to=target_sid)
+    emit("direct-message", payload, to=request.sid)
+
+
+# ---------------------------------------------------------------------------
+# Whiteboard — operation-based sync (never full-canvas snapshots). Host and
+# co-host can always draw; a plain participant can only when the room's
+# draw_access is set to "everyone" (host-controlled).
+# ---------------------------------------------------------------------------
+
+def _can_draw(room, info):
+    if _can_moderate(info):
+        return True
+    return room["whiteboard"]["draw_access"] == "everyone"
+
+
+@socketio.on("whiteboard-join")
+def handle_whiteboard_join(data):
+    """Sends the current whiteboard state to a client opening the board
+    for the first time (or reconnecting) — the operation log replayed in
+    order reconstructs the board exactly, no snapshot needed."""
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room:
+        return
+    emit("whiteboard-state", {
+        "objects": room["whiteboard"]["objects"],
+        "drawAccess": room["whiteboard"]["draw_access"],
+    })
+
+
+@socketio.on("whiteboard-op")
+def handle_whiteboard_op(data):
+    """A single committed object — a finished stroke, a text box, a shape.
+    Appended to the room's operation log and relayed to everyone else.
+    Clears any pending redo stack, matching normal undo/redo semantics
+    (a fresh action invalidates old redo history)."""
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room or not _can_draw(room, room["participants"][request.sid]):
+        return
+    op = data.get("object")
+    if not isinstance(op, dict):
+        return
+    room["whiteboard"]["objects"].append(op)
+    room["whiteboard"]["undone"] = []
+    emit("whiteboard-op", {"object": op}, to=space_id, include_self=False)
+
+
+@socketio.on("whiteboard-undo")
+def handle_whiteboard_undo(data):
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room or not _can_draw(room, room["participants"][request.sid]):
+        return
+    if not room["whiteboard"]["objects"]:
+        return
+    obj = room["whiteboard"]["objects"].pop()
+    room["whiteboard"]["undone"].append(obj)
+    emit("whiteboard-undo", {"id": obj.get("id")}, to=space_id)
+
+
+@socketio.on("whiteboard-redo")
+def handle_whiteboard_redo(data):
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room or not _can_draw(room, room["participants"][request.sid]):
+        return
+    if not room["whiteboard"]["undone"]:
+        return
+    obj = room["whiteboard"]["undone"].pop()
+    room["whiteboard"]["objects"].append(obj)
+    emit("whiteboard-op", {"object": obj}, to=space_id)
+
+
+@socketio.on("whiteboard-clear")
+def handle_whiteboard_clear(data):
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room or not _can_moderate(room["participants"][request.sid]):
+        return  # clearing the whole board is a moderator action regardless of draw_access
+    room["whiteboard"]["objects"] = []
+    room["whiteboard"]["undone"] = []
+    emit("whiteboard-clear", {}, to=space_id)
+
+
+@socketio.on("whiteboard-erase-object")
+def handle_whiteboard_erase_object(data):
+    """Object-scoped erase (the Eraser tool removes whichever stroke/shape
+    the pointer passes over), distinct from whiteboard-undo (removes the
+    most recent object regardless of position)."""
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room or not _can_draw(room, room["participants"][request.sid]):
+        return
+    target_id = data.get("id")
+    room["whiteboard"]["objects"] = [o for o in room["whiteboard"]["objects"] if o.get("id") != target_id]
+    emit("whiteboard-erase-object", {"id": target_id}, to=space_id, include_self=False)
+
+
+@socketio.on("whiteboard-laser")
+def handle_whiteboard_laser(data):
+    """Ephemeral — never stored, never part of the operation log. Just a
+    live cursor position relayed to everyone else while it's held down."""
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room or not _can_draw(room, room["participants"][request.sid]):
+        return
+    emit("whiteboard-laser", {
+        "from": request.sid,
+        "x": data.get("x"),
+        "y": data.get("y"),
+        "active": bool(data.get("active")),
+    }, to=space_id, include_self=False)
+
+
+@socketio.on("set-whiteboard-access")
+def handle_set_whiteboard_access(data):
+    space_id, room = _find_room_for_sid(request.sid)
+    if not room or not _can_moderate(room["participants"][request.sid]):
+        return
+    access = data.get("access")
+    if access not in ("moderators", "everyone"):
+        return
+    room["whiteboard"]["draw_access"] = access
+    emit("whiteboard-access-changed", {"access": access}, to=space_id)
+
+
 @socketio.on("spotlight-participant")
 def handle_spotlight(data):
     space_id, room = _find_room_for_sid(request.sid)
@@ -623,6 +831,21 @@ def handle_screen_share(data):
         return
     room["participants"][request.sid]["screen_sharing"] = bool(data.get("sharing"))
     emit("participant-updated", {"id": request.sid, **room["participants"][request.sid]}, to=space_id, include_self=False)
+
+    # Presentation mode: sharing your screen automatically gives you the
+    # main stage for everyone, and stopping returns to the normal grid —
+    # this is what "presentation/shared content gets main-stage priority"
+    # means in practice, reusing the existing spotlight mechanism instead
+    # of a second parallel main-view system.
+    if room.get("presentation_mode", True):
+        if data.get("sharing"):
+            for sid, info in room["participants"].items():
+                info["spotlighted"] = (sid == request.sid)
+            emit("spotlight-changed", {"targetId": request.sid}, to=space_id)
+        elif room["participants"][request.sid].get("spotlighted"):
+            for sid, info in room["participants"].items():
+                info["spotlighted"] = False
+            emit("spotlight-changed", {"targetId": None}, to=space_id)
 
 
 @socketio.on("host-mute-participant")
@@ -828,6 +1051,12 @@ def handle_end_meeting(data):
 def handle_disconnect():
     space_id, room = _find_room_for_sid(request.sid)
     if not room:
+        # Not an active participant — might still be sitting in a waiting
+        # list (not-started / admission) with no room-membership entry to
+        # find them by. Clean those up too so they don't linger forever.
+        for sid_room in rooms_state.values():
+            sid_room["waiting_for_start"].pop(request.sid, None)
+            sid_room["pending_admission"].pop(request.sid, None)
         return
     was_host = _is_host(room["participants"][request.sid])
     del room["participants"][request.sid]

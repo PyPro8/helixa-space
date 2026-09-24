@@ -55,6 +55,24 @@
 
 * { box-sizing: border-box; }
 
+/* Global icon baseline — every [data-icon] element gets its SVG painted
+   by icons.js, but painting alone doesn't give a bare <span>/<div>
+   sizing or alignment. Without this, only .ctrl-btn (which had its own
+   flex rules) actually displayed its icon; every other icon location
+   (participant menus, more-menu rows, settings tabs, toasts, avatars,
+   home orbit, feature grid) rendered an SVG with no visible box. */
+[data-icon] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+[data-icon] svg {
+  display: block;
+  flex-shrink: 0;
+  color: currentColor;
+}
+
 html, body {
   margin: 0;
   padding: 0;
@@ -662,6 +680,7 @@ button { font-family: var(--font-body); cursor: pointer; }
   flex: 1;
   display: flex;
   min-height: 0;
+  position: relative; /* anchors the side-panel drawer's absolute positioning */
 }
 
 .stage {
@@ -736,6 +755,7 @@ button { font-family: var(--font-body); cursor: pointer; }
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: border-color 0.25s var(--ease), box-shadow 0.25s var(--ease);
 }
 
 .tile video {
@@ -833,6 +853,20 @@ button { font-family: var(--font-body); cursor: pointer; }
   flex-direction: column;
   background: var(--bg-1);
   flex-shrink: 0;
+  /* Real slide-in drawer, not a display:none/flex teleport — the panel
+     overlays the stage (which expands to fill the space) and animates
+     in/out via transform, per spec. */
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 25;
+  transform: translateX(100%);
+  transition: transform 0.28s var(--ease);
+  box-shadow: -12px 0 30px rgba(0,0,0,0.25);
+}
+.side-panel.open {
+  transform: translateX(0);
 }
 
 .side-panel-head {
@@ -902,6 +936,14 @@ button { font-family: var(--font-body); cursor: pointer; }
 }
 .participant-name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .participant-status { display: flex; gap: 6px; font-size: 13px; color: var(--text-2); align-items: center; }
+.row-icon { display: inline-flex; align-items: center; justify-content: center; }
+.dm-unread-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--hx-accent);
+  box-shadow: 0 0 0 2px var(--bg-1);
+}
 .participant-menu-btn { background: none; border: none; color: var(--text-2); font-size: 16px; padding: 4px 8px; }
 .participant-menu-btn:hover { color: var(--text-0); }
 
@@ -935,12 +977,34 @@ button { font-family: var(--font-body); cursor: pointer; }
   flex-wrap: nowrap;
   max-width: calc(100vw - 32px);
   bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+  transition: transform 0.3s var(--ease), opacity 0.3s var(--ease);
+}
+.control-bar.dock-hidden {
+  transform: translateX(-50%) translateY(140%);
+  opacity: 0;
+  pointer-events: none;
 }
 [data-theme="light"] .control-bar {
   background: rgba(255,255,255,0.75);
   border-color: rgba(11,18,32,0.1);
   box-shadow: 0 20px 50px rgba(23,107,255,0.18), inset 0 1px 0 rgba(255,255,255,0.6);
 }
+
+.dock-restore-btn {
+  position: fixed;
+  left: 50%;
+  bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 30;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: rgba(15, 25, 48, 0.85);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: #fff;
+  box-shadow: var(--shadow);
+}
+[data-theme="light"] .dock-restore-btn { background: rgba(255,255,255,0.9); color: var(--text-0); }
 
 .ctrl-btn {
   width: 46px;
@@ -1010,21 +1074,83 @@ button { font-family: var(--font-body); cursor: pointer; }
   transform: translateX(-50%);
   background: var(--bg-2);
   border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  padding: 8px 12px;
+  border-radius: 16px;
+  padding: 8px;
   display: none;
+  flex-direction: column;
   gap: 6px;
   box-shadow: var(--shadow);
+  width: min(250px, calc(100vw - 32px));
+  max-height: min(300px, 55vh);
+  z-index: 35;
 }
 .reactions-tray.open { display: flex; }
-.reactions-tray button {
+
+/* The default reactions are the scrollable portion. The + control is
+   deliberately outside it, so it stays visible at the bottom even when
+   the reaction list grows. */
+.reactions-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  min-height: 0;
+  padding: 2px;
+}
+.reactions-scroll button {
+  width: 100%;
   background: none;
   border: none;
+  border-radius: 10px;
   font-size: 22px;
-  padding: 4px;
-  transition: transform 0.15s var(--ease);
+  padding: 8px;
+  flex-shrink: 0;
+  transition: transform 0.15s var(--ease), background 0.15s var(--ease);
 }
-.reactions-tray button:hover { transform: scale(1.25); }
+.reactions-scroll button:hover { transform: scale(1.08); background: var(--bg-3); }
+
+.reactions-add-btn {
+  flex: 0 0 38px;
+  width: 38px;
+  height: 38px;
+  align-self: center;
+  border-radius: 50%;
+  background: var(--hx-blue);
+  color: #fff;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+.reactions-add-btn:hover { background: var(--hx-blue-dim); }
+.emoji-picker-popup {
+  display: none;
+  position: fixed;
+  z-index: 120;
+  background: var(--bg-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+  box-shadow: var(--shadow);
+  width: 260px;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+.emoji-picker-popup.open { display: block; }
+.emoji-picker-popup input {
+  width: 100%;
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text-0);
+  padding: 10px;
+  font-size: 20px;
+  text-align: center;
+  margin-bottom: 10px;
+}
 
 /* Screen share indicator */
 .sharing-banner {
@@ -1150,7 +1276,15 @@ button { font-family: var(--font-body); cursor: pointer; }
 .diag-log { color: #9fb4d9; font-size: 10px; max-height: 120px; overflow-y: auto; }
 
 @media (max-width: 900px) {
-  .side-panel { position: fixed; right: 0; top: 0; bottom: 0; z-index: 40; width: 88vw; max-width: 340px; }
+  .side-panel {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    z-index: 40;
+    width: 88vw;
+    max-width: 340px;
+  }
   .ad-box { display: none; }
 }
 
@@ -1212,11 +1346,12 @@ button { font-family: var(--font-body); cursor: pointer; }
    ========================================================================== */
 
 .more-menu {
-  display: none;
+  display: flex;
+  flex-direction: column;
   position: fixed;
   bottom: 84px;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translateX(-50%) translateY(8px) scale(.98);
   background: var(--bg-1);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
@@ -1224,8 +1359,18 @@ button { font-family: var(--font-body); cursor: pointer; }
   box-shadow: var(--shadow);
   z-index: 31;
   min-width: 180px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity .2s var(--ease), transform .2s var(--ease), visibility 0s linear .2s;
 }
-.more-menu.open { display: flex; flex-direction: column; }
+.more-menu.open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateX(-50%) translateY(0) scale(1);
+  transition-delay: 0s;
+}
 .more-menu button {
   display: flex;
   align-items: center;
@@ -1246,7 +1391,7 @@ button { font-family: var(--font-body); cursor: pointer; }
     right: 0;
     bottom: 0;
     top: auto;
-    transform: none;
+    transform: translateY(8px) scale(.99);
     width: 100%;
     max-width: 100%;
     min-width: 0;
@@ -1256,7 +1401,12 @@ button { font-family: var(--font-body); cursor: pointer; }
     max-height: 60vh;
     overflow-y: auto;
   }
-  .more-menu.open { display: flex; }
+  .more-menu.open {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateY(0) scale(1);
+  }
   .more-menu button {
     padding: 14px 14px;
     font-size: 15px;
@@ -1696,3 +1846,134 @@ button { font-family: var(--font-body); cursor: pointer; }
 .tile-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .participant-avatar-sm { overflow: hidden; }
 .participant-avatar-sm img { width: 100%; height: 100%; object-fit: cover; }
+
+/* ==========================================================================
+   v0.9 — Whiteboard
+   ========================================================================== */
+
+.whiteboard-container {
+  position: absolute;
+  inset: 16px 16px 90px;
+  z-index: 20;
+  background: var(--bg-1);
+  border: 2px solid #F5F8FF;
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+[data-theme="light"] .whiteboard-container {
+  border-color: #0B1220;
+}
+#whiteboardCanvas, #whiteboardLaserCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+#whiteboardLaserCanvas { pointer-events: none; }
+
+.wb-toolbar {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(15, 25, 48, 0.85);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 999px;
+  padding: 6px;
+  box-shadow: var(--shadow);
+  z-index: 5;
+  max-width: calc(100% - 24px);
+  overflow-x: auto;
+  transition: opacity 0.25s var(--ease), transform 0.25s var(--ease);
+}
+.wb-toolbar.hidden { opacity: 0; transform: translateX(-50%) translateY(-12px); pointer-events: none; }
+[data-theme="light"] .wb-toolbar { background: rgba(255,255,255,0.9); }
+
+.wb-tool {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+[data-theme="light"] .wb-tool { color: var(--text-0); }
+.wb-tool:hover { background: rgba(255,255,255,0.12); }
+.wb-tool.active { background: var(--hx-blue); color: #fff; }
+
+.wb-divider { width: 1px; height: 20px; background: rgba(255,255,255,0.15); flex-shrink: 0; }
+
+.wb-color-swatches { display: flex; gap: 4px; flex-shrink: 0; }
+.wb-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  flex-shrink: 0;
+}
+.wb-swatch.active { border-color: var(--hx-accent); }
+
+.wb-toolbar-toggle {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(15, 25, 48, 0.85);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: #fff;
+  z-index: 5;
+}
+
+.wb-text-popup {
+  display: none;
+  position: fixed;
+  z-index: 120;
+  background: var(--bg-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  box-shadow: var(--shadow);
+  width: 220px;
+}
+.wb-text-popup.open { display: block; }
+.wb-text-popup textarea {
+  width: 100%;
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text-0);
+  padding: 8px;
+  font-size: 13px;
+  font-family: var(--font-body);
+  resize: none;
+}
+.wb-text-popup-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+
+@media (max-width: 700px) {
+  .whiteboard-container { inset: 8px 8px 84px; }
+  .wb-toolbar { max-width: calc(100% - 16px); }
+  .wb-tool { width: 30px; height: 30px; }
+}
+
+/* Short landscape (rotated phones) — keep the toolbar from eating too
+   much of a shallow viewport, and keep the dock from stacking oddly. */
+@media (max-height: 480px) and (orientation: landscape) {
+  .whiteboard-container { inset: 6px 6px 64px; }
+  .wb-toolbar { top: 6px; padding: 4px; }
+  .wb-tool { width: 26px; height: 26px; }
+  .control-bar { bottom: calc(10px + env(safe-area-inset-bottom, 0px)); padding: 6px; }
+  .ctrl-btn { width: 38px; height: 38px; }
+}
