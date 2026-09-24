@@ -64,11 +64,9 @@ const HXIcon = (function () {
     return `<svg${cls} width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
   }
 
-  const api = { svg: svg };
-  // Expose the icon API on window as well as the global lexical binding.
-  // Shared pages use window.HXIcon for feature detection; without this,
-  // landing/create/join icon painting silently skipped while meeting.js
-  // (which calls HXIcon directly) still worked.
-  window.HXIcon = api;
-  return api;
+  return { svg: svg };
 })();
+
+// Expose the single Helixa icon registry to the rest of the application.
+// All pages use this same renderer; no second icon library is required.
+window.HXIcon = HXIcon;
