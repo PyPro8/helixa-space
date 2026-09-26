@@ -70,25 +70,17 @@
       </div>
 
       <div class="reactions-tray" id="reactionsTray">
-        <div class="reactions-scroll">
-          <button data-emoji="👍" title="Like"></button>
-          <button data-emoji="❤️" title="Love"></button>
-          <button data-emoji="😂" title="Laugh"></button>
-          <button data-emoji="⭐" title="Great"></button>
-          <button data-emoji="🎉" title="Celebrate"></button>
-          <button data-emoji="👏" title="Clap"></button>
-          <button data-emoji="🔥" title="Fire"></button>
-          <button data-emoji="😮" title="Wow"></button>
-          <button data-emoji="🤔" title="Thinking"></button>
-        </div>
-        <button class="reactions-add-btn" id="reactionsAddBtn" title="Choose any emoji" data-icon="zap"></button>
+        <button data-icon="thumbs-up" title="Like"></button>
+        <button data-icon="heart" title="Love"></button>
+        <button data-icon="laugh" title="Laugh"></button>
+        <button data-icon="star" title="Great"></button>
+        <button data-icon="party-popper" title="Celebrate"></button>
       </div>
     </div>
 
-    <div class="side-panel" id="chatPanel">
+    <div class="side-panel" id="chatPanel" style="display:none;">
       <div class="side-panel-head">
-        <button class="panel-close" id="chatBackBtn" data-icon="corner-up-left" style="display:none;"></button>
-        <h3 id="chatPanelTitle">Chat</h3>
+        <h3>Chat</h3>
         <button class="panel-close" data-close="chatPanel" data-icon="x"></button>
       </div>
       <div class="side-panel-body" id="chatMessages"></div>
@@ -98,7 +90,7 @@
       </div>
     </div>
 
-    <div class="side-panel" id="participantsPanel">
+    <div class="side-panel" id="participantsPanel" style="display:none;">
       <div class="side-panel-head">
         <h3>Participants (<span id="participantCount">1</span>)</h3>
         <button class="panel-close" data-close="participantsPanel" data-icon="x"></button>
@@ -126,8 +118,6 @@
     <button class="ctrl-btn leave" id="leaveBtn" title="Leave Space" data-icon="phone-off"></button>
   </div>
 
-  <button class="dock-restore-btn" id="dockRestoreBtn" title="Show controls" data-icon="chevron-up" style="display:none;"></button>
-
   <div class="more-menu" id="moreMenu">
     <button id="settingsMenuBtn" data-icon="settings">Settings</button>
     <button id="shareMenuBtn" class="dock-optional-in-menu" data-icon="monitor">Share screen</button>
@@ -136,15 +126,10 @@
     <button id="requestCoHostBtn" data-icon="user-check" style="display:none;">Request co-host</button>
     <button id="reactMenuBtn" data-icon="smile">Reactions</button>
     <button id="fullscreenMenuBtn" data-icon="maximize">Fullscreen</button>
-    <button id="hideDockMenuBtn" data-icon="chevron-down">Hide controls</button>
-    <button id="rotateMenuBtn" data-icon="corner-up-right">Rotate view</button>
     <button id="qrMenuBtn" data-icon="qr-code">Show join QR</button>
     <button id="muteEveryoneBtn" data-icon="mic-off" style="display:none;">Mute everyone</button>
     <button id="admissionModeBtn" data-icon="user-check" style="display:none;">
       Admin Admission <span id="admissionModeToggle" style="margin-left:auto; font-weight:700; color:var(--text-2);">OFF</span>
-    </button>
-    <button id="presentationModeBtn" data-icon="presentation" style="display:none;">
-      Presentation mode <span id="presentationModeToggle" style="margin-left:auto; font-weight:700; color:var(--text-2);">ON</span>
     </button>
     <button id="blockedListBtn" data-icon="lock" style="display:none;">Blocked participants</button>
     <button id="wbAccessBtn" data-icon="users" style="display:none;">
@@ -215,6 +200,22 @@
       <div class="settings-cam-preview">
         <video id="settingsCamPreview" autoplay muted playsinline></video>
       </div>
+      <div class="field">
+        <label for="transmissionQuality">Transmission quality</label>
+        <select id="transmissionQuality">
+          <option value="low">Low — save data</option>
+          <option value="medium" selected>Medium — balanced</option>
+          <option value="high">High — more detail</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="receptionQuality">Reception quality</label>
+        <select id="receptionQuality">
+          <option value="low">Low — save data</option>
+          <option value="medium" selected>Medium — balanced</option>
+          <option value="high">High — more detail</option>
+        </select>
+      </div>
     </div>
 
     <div class="settings-panel" data-panel="appearance">
@@ -267,15 +268,6 @@
   <div class="wb-text-popup-actions">
     <button class="btn btn-ghost btn-sm" id="wbTextCancelBtn">Cancel</button>
     <button class="btn btn-primary btn-sm" id="wbTextConfirmBtn">Add</button>
-  </div>
-</div>
-
-<div class="emoji-picker-popup" id="emojiPickerPopup">
-  <p style="font-size:12px; color:var(--text-2); margin-bottom:8px;">Pick any emoji — most keyboards (mobile, Windows, macOS) offer a picker when this field is focused.</p>
-  <input type="text" id="emojiPickerInput" maxlength="8" placeholder="Tap here, then choose an emoji">
-  <div class="wb-text-popup-actions">
-    <button class="btn btn-ghost btn-sm" id="emojiPickerCancelBtn">Cancel</button>
-    <button class="btn btn-primary btn-sm" id="emojiPickerConfirmBtn">Send</button>
   </div>
 </div>
 

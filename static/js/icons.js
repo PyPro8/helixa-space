@@ -66,10 +66,3 @@ const HXIcon = (function () {
 
   return { svg: svg };
 })();
-
-// Explicit global assignment — relying on implicit script-global-to-window
-// binding was fragile across environments; this guarantees window.HXIcon
-// exists the instant this file finishes loading, which everything else
-// (main.js, meeting.js, whiteboard.js) checks for before painting icons
-// or wiring up controls.
-window.HXIcon = HXIcon;

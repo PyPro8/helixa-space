@@ -415,6 +415,3 @@ document.addEventListener('DOMContentLoaded', () => {
   HX.initCreateForm();
   HX.initJoinForm();
 });
-
-// Explicit global assignment — same fix as icons.js, for the same reason.
-window.HX = HX;

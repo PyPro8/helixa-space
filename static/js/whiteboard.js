@@ -408,5 +408,3 @@ const HXWhiteboard = (function () {
 
   return { init, open, close, isOpen, setModerator };
 })();
-
-window.HXWhiteboard = HXWhiteboard;
