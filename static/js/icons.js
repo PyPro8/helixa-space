@@ -67,6 +67,9 @@ const HXIcon = (function () {
   return { svg: svg };
 })();
 
-// Expose the single Helixa icon registry to the rest of the application.
-// All pages use this same renderer; no second icon library is required.
+// Explicit global assignment — relying on implicit script-global-to-window
+// binding was fragile across environments; this guarantees window.HXIcon
+// exists the instant this file finishes loading, which everything else
+// (main.js, meeting.js, whiteboard.js) checks for before painting icons
+// or wiring up controls.
 window.HXIcon = HXIcon;
